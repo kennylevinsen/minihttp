@@ -10,7 +10,9 @@ import (
 	"io/ioutil"
 	"log"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -31,12 +33,7 @@ var (
 	tlskey      = flag.String("tlskey", "", "tls key path")
 	logfile     = flag.String("logfile", "", "file to write log to")
 	cmdaddr     = flag.String("cmdaddr", "", "addr to listen for cmds on")
-)
-
-var (
-	indevmode    uint32
-	resources    map[string]*resource
-	resourceLock sync.RWMutex
+	defaulthost = flag.String("defaulthost", "", "default host when none is provided")
 )
 
 type resource struct {
@@ -46,9 +43,11 @@ type resource struct {
 	cache   time.Duration
 	loaded  time.Time
 	hash    string
+	path    string
 }
 
-func (r *resource) load(p string) error {
+func (r *resource) load() error {
+	p := r.path
 	s, err := os.Stat(p)
 	if err != nil {
 		return nil
@@ -56,11 +55,7 @@ func (r *resource) load(p string) error {
 
 	if s.IsDir() {
 		p = path.Join(p, *defaultFile)
-		s, err := os.Stat(p)
-		if err != nil {
-			return nil
-		}
-		if s.IsDir() {
+		if s, err := os.Stat(p); err != nil || s.IsDir() {
 			return nil
 		}
 	}
@@ -73,7 +68,7 @@ func (r *resource) load(p string) error {
 	ext := path.Ext(p)
 
 	switch ext {
-	case ".woff", ".woff2", ".ttf", ".eot", ".otf":
+	case ".woff", ".woff2", ".ttf", ".eot", ".otf", ".jpg", ".png":
 		r.cache = 90 * 24 * time.Hour
 	case ".css":
 		r.cache = 7 * 24 * time.Hour
@@ -100,24 +95,212 @@ func (r *resource) load(p string) error {
 	return nil
 }
 
-func reload(p string) (map[string]*resource, error) {
-	res := make(map[string]*resource)
-	err := filepath.Walk(p, func(p string, info os.FileInfo, err error) error {
+var (
+	defErrNoSuchHost = &resource{
+		body:    []byte("no such service"),
+		cnttype: "text/plain",
+	}
+	defErrNoSuchFile = &resource{
+		body:    []byte("no such file"),
+		cnttype: "text/plain",
+	}
+)
+
+type site struct {
+	sync.RWMutex
+	resources map[string]*resource
+	fancypath string
+}
+
+type sitelist struct {
+	httpSites  map[string]*site
+	httpsSites map[string]*site
+	siteLock   sync.RWMutex
+
+	errNoSuchHost *resource
+	errNoSuchFile *resource
+
+	root      string
+	fancypath string
+	devmode   uint32
+}
+
+func (sl *sitelist) dev(active bool) {
+	if active {
+		atomic.StoreUint32(&sl.devmode, 1)
+	} else {
+		atomic.StoreUint32(&sl.devmode, 0)
+	}
+}
+
+func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
+	host, _, err := net.SplitHostPort(url.Host)
+	if err != nil {
+		host = url.Host
+	}
+
+	var smap map[string]*site
+	switch url.Scheme {
+	case "https":
+		smap = sl.httpsSites
+	default:
+		smap = sl.httpSites
+	}
+
+	if atomic.LoadUint32(&sl.devmode) == 1 {
+		sl.load()
+	}
+
+	sl.siteLock.RLock()
+	s, exists := smap[host]
+	sl.siteLock.RUnlock()
+	if !exists {
+		if sl.errNoSuchHost != nil {
+			return sl.errNoSuchHost, 500
+		}
+		return defErrNoSuchHost, 500
+	}
+
+	var res *resource
+
+	p := path.Clean(url.Path)
+	if sl.fancypath != "" && len(p) > len(sl.fancypath) && p[:len(sl.fancypath)] == sl.fancypath {
+		p = path.Join(sl.root, host, "fancy", p)
+		if s, err := os.Stat(p); err != nil || s.IsDir() {
+			goto filenotfound
+		}
+		res = &resource{path: p}
+		if err = res.load(); err != nil {
+			goto filenotfound
+		}
+		res.cache = 0
+
+		return res, 200
+	}
+
+	s.RLock()
+	res, exists = s.resources[p]
+	s.RUnlock()
+	if exists {
+		return res, 200
+	}
+
+filenotfound:
+	p = path.Join("/404.html")
+	s.RLock()
+	res, exists = s.resources[p]
+	s.RUnlock()
+	if exists {
+		return res, 404
+	}
+
+	if sl.errNoSuchFile != nil {
+		return sl.errNoSuchFile, 404
+	}
+
+	return defErrNoSuchFile, 404
+}
+
+func (sl *sitelist) load() error {
+	var (
+		httpSites     = make(map[string]*site)
+		httpsSites    = make(map[string]*site)
+		errNoSuchHost *resource
+		errNoSuchFile *resource
+	)
+
+	// list root
+	files, err := ioutil.ReadDir(sl.root)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range files {
+		name := s.Name()
+		if !s.IsDir() {
+			switch name {
+			case "404.html":
+				errNoSuchFile = &resource{path: path.Join(sl.root, name)}
+				if err := errNoSuchFile.load(); err != nil {
+					return err
+				}
+			case "500.html":
+				errNoSuchHost = &resource{path: path.Join(sl.root, name)}
+				if err := errNoSuchHost.load(); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+
+		components, err := ioutil.ReadDir(path.Join(sl.root, name))
 		if err != nil {
 			return err
 		}
 
-		r := &resource{}
-		if err = r.load(p); err != nil {
-			return err
+		for _, c := range components {
+			if !c.IsDir() {
+				continue
+			}
+
+			component := c.Name()
+			start := path.Join(sl.root, name, component)
+			err := filepath.Walk(start, func(p string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				p2 := p[len(start):]
+				if len(p2) == 0 {
+					p2 = "/"
+				}
+
+				res := &resource{path: p}
+				err = res.load()
+				if err != nil {
+					return err
+				}
+
+				if component == "http" || component == "common" {
+					if _, exists := httpSites[name]; !exists {
+						httpSites[name] = &site{
+							resources: make(map[string]*resource),
+						}
+					}
+					httpSites[name].resources[p2] = res
+				}
+
+				if component == "https" || component == "common" {
+					if _, exists := httpsSites[name]; !exists {
+						httpsSites[name] = &site{
+							resources: make(map[string]*resource),
+						}
+					}
+					httpsSites[name].resources[p2] = res
+				}
+
+				return nil
+			})
+
+			if err != nil {
+				return err
+			}
 		}
+	}
 
-		res[p] = r
+	sl.siteLock.Lock()
+	sl.httpSites = httpSites
+	sl.httpsSites = httpsSites
+	sl.errNoSuchFile = errNoSuchFile
+	sl.errNoSuchHost = errNoSuchHost
+	sl.siteLock.Unlock()
 
-		return nil
-	})
+	return nil
+}
 
-	return res, err
+func access(req *http.Request, status int) {
+	log.Printf("[%s]: %s \"%v\" %s %d", req.RemoteAddr, req.Method, req.URL, req.Proto, status)
 }
 
 func main() {
@@ -150,16 +333,14 @@ func main() {
 		return
 	}
 
-	resources, err = reload(*rootdir)
+	sl := &sitelist{root: *rootdir}
 
-	if err != nil {
+	if err = sl.load(); err != nil {
 		log.Printf("Unable to walk files: %v", err)
 		return
 	}
 
-	if *development {
-		indevmode = 1
-	}
+	sl.dev(*development)
 
 	if *cmdaddr != "" {
 		go func() {
@@ -167,39 +348,31 @@ func main() {
 				switch req.URL.Path {
 				case "/devel":
 					log.Printf("[%s]: enabling development mode", req.RemoteAddr)
-					atomic.StoreUint32(&indevmode, 1)
+					sl.dev(true)
 
 					w.Header().Set("Content-Type", "text/plain")
 					w.Write([]byte("OK\n"))
 				case "/prod":
-					log.Printf("[%s]: enabling production mode", req.RemoteAddr)
-					r, err := reload(*rootdir)
-					if err != nil {
-						log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
-						w.WriteHeader(500)
-						w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
-					}
-					resourceLock.Lock()
-					resources = r
-					resourceLock.Unlock()
-
-					atomic.StoreUint32(&indevmode, 0)
-
-					w.Header().Set("Content-Type", "text/plain")
-					w.Write([]byte("OK\n"))
-				case "/reload":
+					log.Printf("[%s]: disabling development mode", req.RemoteAddr)
+					sl.dev(false)
 					log.Printf("[%s]: reloading", req.RemoteAddr)
-					r, err := reload(*rootdir)
-					if err != nil {
+					if err = sl.load(); err != nil {
 						log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
 						w.WriteHeader(500)
 						w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
 						return
 					}
 
-					resourceLock.Lock()
-					resources = r
-					resourceLock.Unlock()
+					w.Header().Set("Content-Type", "text/plain")
+					w.Write([]byte("OK\n"))
+				case "/reload":
+					log.Printf("[%s]: reloading", req.RemoteAddr)
+					if err = sl.load(); err != nil {
+						log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
+						w.WriteHeader(500)
+						w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
+						return
+					}
 
 					w.Header().Set("Content-Type", "text/plain")
 					w.Write([]byte("OK\n"))
@@ -219,24 +392,18 @@ func main() {
 		}()
 	}
 
-	var isfancyplace func(string) bool
-
-	if *fromdisk == "" {
-		isfancyplace = func(string) bool { return false }
-	} else {
-		matchstr := path.Join(*rootdir, *fromdisk) + "/"
-		matchlen := len(matchstr)
-		isfancyplace = func(p string) bool {
-			if matchlen > len(p) {
-				return false
-			}
-			return p[:matchlen] == matchstr
-		}
-	}
-
 	handler := func(w http.ResponseWriter, req *http.Request) {
-
-		log.Printf("[%s]: \"%s %v %s\"", req.RemoteAddr, req.Method, req.URL, req.Proto)
+		// We patch up the URL object for convenience.
+		if req.Host == "" {
+			req.URL.Host = *defaulthost
+		} else {
+			req.URL.Host = req.Host
+		}
+		if req.TLS != nil {
+			req.URL.Scheme = "https"
+		} else {
+			req.URL.Scheme = "http"
+		}
 
 		// Evaluate method
 		var head bool
@@ -248,106 +415,69 @@ func main() {
 		default:
 			w.WriteHeader(405)
 			w.Write([]byte("<!doctype html><html><body><h1>405 Method Not Allowed</h1></body></html>\n"))
+			access(req, 405)
 			return
 		}
 
-		// Fetch resource
-		p := path.Join(*rootdir, path.Clean(req.URL.Path))
+		r, status := sl.fetch(req.URL)
 
-		devreq := atomic.LoadUint32(&indevmode) == 1
-
-		var r *resource
-		var exists bool
-		if isfancyplace(p) {
-			if s, err := os.Stat(p); err != nil || s.IsDir() {
-				goto doom
-			}
-			r = &resource{}
-			if err = r.load(p); err != nil {
-				r = nil
-				goto doom
-			}
-			r.cache = 0
-			exists = true
-		} else {
-			if devreq {
-				resourceLock.Lock()
-				log.Printf("[%s]: reloading", req.RemoteAddr)
-				r, err := reload(*rootdir)
-				if err != nil {
-					resourceLock.Unlock()
-					log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
-					w.WriteHeader(500)
-					w.Write([]byte(fmt.Sprintf("<!doctype html><html><body><h1>500 Internal Server Error</h1><p>%v</p></body></html>\n", err)))
-					return
-				}
-				resources = r
-				resourceLock.Unlock()
-			}
-
-			resourceLock.RLock()
-			r, exists = resources[p]
-			resourceLock.RUnlock()
-		}
-
-	doom:
-		if !exists {
-			w.WriteHeader(404)
-			w.Write([]byte("<!doctype html><html><body><h1>404 File Not Found</h1></body></html>\n"))
-			return
-		}
-
-		cacheResponse := false
-
-		ifModifiedSince := req.Header.Get("If-Modified-Since")
-		ifNoneMatch := req.Header.Get("If-None-Match")
-		if ifNoneMatch != "" {
-			cacheResponse = ifNoneMatch == r.hash
-		} else if ifModifiedSince != "" {
-			imsdate, err := time.Parse(time.RFC1123, ifModifiedSince)
-			cacheResponse = err == nil && imsdate.After(r.loaded)
-		}
-
-		usegzip := r.gzip != nil && strings.Contains(req.Header.Get("Accept-Encoding"), "gzip")
-		var b []byte
-		if usegzip {
-			b = r.gzip
-		} else {
-			b = r.body
-		}
 		// Set headers
 		h := w.Header()
 		if r.cnttype != "" {
 			h.Set("Content-Type", r.cnttype)
 		}
 
-		now := time.Now().Format(time.RFC1123)
-		h.Set("Etag", r.hash)
-		h.Set("Date", now)
-		h.Set("Expires", now)
+		now := time.Now()
+		if r.hash != "" {
+			h.Set("Etag", r.hash)
+		}
+		h.Set("Date", now.Format(time.RFC1123))
 		h.Set("Last-Modified", r.loaded.Format(time.RFC1123))
 		h.Set("Vary", "Accept-Encoding")
 
-		var cc string
-		if r.cache == 0 || devreq {
-			cc = fmt.Sprintf("public, max-age=0, no-cache")
+		// Cacheable?
+		if r.cache == 0 {
+			h.Set("Cache-Control", fmt.Sprintf("public, max-age=0, no-cache"))
+			h.Set("Expires", now.Format(time.RFC1123))
 		} else {
-			cc = fmt.Sprintf("public, max-age=%.0f", r.cache.Seconds())
-		}
-		h.Set("Cache-Control", cc)
-
-		if cacheResponse {
-			w.WriteHeader(304)
-			return
+			h.Set("Cache-Control", fmt.Sprintf("public, max-age=%.0f", r.cache.Seconds()))
+			h.Set("Expires", now.Add(r.cache).Format(time.RFC1123))
 		}
 
-		if usegzip {
+		// Should we send a 304 Not Modified?
+		if status == 200 {
+			cacheResponse := false
+			ifModifiedSince := req.Header.Get("If-Modified-Since")
+			ifNoneMatch := req.Header.Get("If-None-Match")
+			if ifNoneMatch != "" {
+				cacheResponse = ifNoneMatch == r.hash
+			} else if ifModifiedSince != "" {
+				imsdate, err := time.Parse(time.RFC1123, ifModifiedSince)
+				cacheResponse = err == nil && imsdate.After(r.loaded)
+			}
+
+			if cacheResponse {
+				w.WriteHeader(304)
+				access(req, 304)
+				return
+			}
+		}
+
+		// Compressed?
+		var b []byte
+		if r.gzip != nil && strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
 			h.Set("Content-Encoding", "gzip")
+			b = r.gzip
+		} else {
+			b = r.body
 		}
 		h.Set("Content-Length", fmt.Sprintf("%d", len(b)))
 
+		w.WriteHeader(status)
+		access(req, status)
+
+		// HEAD?
 		if head {
-			w.WriteHeader(200)
 			return
 		}
 
