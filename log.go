@@ -53,7 +53,7 @@ func (w *RotateWriter) Rotate() error {
 	}
 
 	for i := 9; i > 0; i-- {
-		os.Rename(fmt.Sprintf("%s-%d.gz", w.Root, i), fmt.Sprintf("%s-%d.gz", w.Root, i+1))
+		os.Rename(fmt.Sprintf("%s.%d.gz", w.Root, i), fmt.Sprintf("%s.%d.gz", w.Root, i+1))
 	}
 
 	b, _ := ioutil.ReadFile(w.Root)
@@ -61,7 +61,7 @@ func (w *RotateWriter) Rotate() error {
 	c := gzip.NewWriter(buf)
 	c.Write(b)
 	c.Close()
-	ioutil.WriteFile(fmt.Sprintf("%s-1.gz", w.Root), buf.Bytes(), 0666)
+	ioutil.WriteFile(fmt.Sprintf("%s.1.gz", w.Root), buf.Bytes(), 0666)
 
 	// Create a file.
 	w.fp, err = os.Create(w.Root)

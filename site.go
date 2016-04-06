@@ -70,20 +70,19 @@ func (r *resource) update() error {
 
 // load reads a file from the path, and calls update.
 func (r *resource) load() error {
-	p := r.path
-	s, err := os.Stat(p)
+	s, err := os.Stat(r.path)
 	if err != nil {
 		return nil
 	}
 
 	if s.IsDir() {
-		p = path.Join(p, *defaultFile)
-		if s, err := os.Stat(p); err != nil || s.IsDir() {
+		r.path = path.Join(r.path, *defaultFile)
+		if s, err := os.Stat(r.path); err != nil || s.IsDir() {
 			return nil
 		}
 	}
 
-	body, err := ioutil.ReadFile(p)
+	body, err := ioutil.ReadFile(r.path)
 	if err != nil {
 		return err
 	}
