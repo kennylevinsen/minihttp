@@ -212,9 +212,6 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	fancypath := s.config.FancyFolder
 	if fancypath != "" && len(p) > len(fancypath) && p[:len(fancypath)] == fancypath {
 		p = path.Join(sl.root, host, "fancy", p)
-		if s, err := os.Stat(p); err != nil || s.IsDir() {
-			goto filenotfound
-		}
 		body, err := ioutil.ReadFile(p)
 		if err != nil {
 			goto filenotfound
