@@ -6,41 +6,43 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"sync"
-	"time"
 )
 
-type RotateWriter struct {
-	lock sync.Mutex
-	fp   *os.File
-	last time.Time
+type rotateWriter struct {
+	fp    *os.File
+	queue chan []byte
+	count int
 
-	Interval time.Duration
+	MaxLines int
 	Root     string
 }
 
-// Write satisfies the io.Writer interface.
-func (w *RotateWriter) Write(output []byte) (int, error) {
-	n := time.Now()
-	if n.After(w.last.Add(w.Interval)) || w.fp == nil {
-		err := w.Rotate()
+func (w *rotateWriter) Serve() error {
+	for entry := range w.queue {
+		if w.fp == nil || w.count > w.MaxLines {
+			err := w.rotate()
+			if err != nil {
+				return err
+			}
+		}
+
+		w.count++
+		_, err := w.fp.Write(entry)
 		if err != nil {
-			w.fp = nil
+			return err
 		}
 	}
 
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	return w.fp.Write(output)
+	return nil
 }
 
-// Perform the actual act of rotating and reopening file.
-func (w *RotateWriter) Rotate() error {
-	w.lock.Lock()
-	defer w.lock.Unlock()
+// Write satisfies the io.Writer interface.
+func (w *rotateWriter) Write(output []byte) (int, error) {
+	w.queue <- output
+	return len(output), nil
+}
 
-	w.last = time.Now()
-
+func (w *rotateWriter) rotate() error {
 	var err error
 
 	// Close existing file if open
@@ -65,5 +67,14 @@ func (w *RotateWriter) Rotate() error {
 
 	// Create a file.
 	w.fp, err = os.Create(w.Root)
+	w.count = 0
 	return err
+}
+
+func newRotateWriter(name string, maxlines int) *rotateWriter {
+	return &rotateWriter{
+		queue:    make(chan []byte, 1024),
+		Root:     name,
+		MaxLines: maxlines,
+	}
 }

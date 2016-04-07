@@ -33,20 +33,22 @@ type resource struct {
 	loaded  time.Time
 	hash    string
 	path    string
+	config  *SiteConfig
 }
 
 // update updates all information about the resource, given a body and a path.
 // Its use eases synthetic content creation.
-func (r *resource) update() error {
+func (r *resource) update() {
+	var mincomp float64
 	ext := path.Ext(r.path)
 
-	switch ext {
-	case ".woff", ".woff2", ".ttf", ".eot", ".otf", ".jpg", ".png":
-		r.cache = 90 * 24 * time.Hour
-	case ".css":
-		r.cache = 7 * 24 * time.Hour
-	default:
-		r.cache = time.Hour
+	if r.config != nil {
+		mincomp = r.config.MinimumCompressionRatio
+		if x, exists := r.config.CacheTimes[ext]; exists {
+			r.cache = x.Duration
+		} else {
+			r.cache = r.config.DefaultCacheTime.Duration
+		}
 	}
 
 	buf := new(bytes.Buffer)
@@ -55,7 +57,7 @@ func (r *resource) update() error {
 	gz.Close()
 	r.gzip = buf.Bytes()
 
-	if float64(len(r.gzip))*1.1 >= float64(len(r.body)) {
+	if mincomp == 0 || float64(len(r.gzip))*mincomp >= float64(len(r.body)) {
 		// The compression is too weak.
 		r.gzip = nil
 	}
@@ -64,43 +66,63 @@ func (r *resource) update() error {
 	r.hash = hex.EncodeToString(h[:])
 	r.cnttype = mime.TypeByExtension(ext)
 	r.loaded = time.Now()
-
-	return nil
-}
-
-// load reads a file from the path, and calls update.
-func (r *resource) load() error {
-	s, err := os.Stat(r.path)
-	if err != nil {
-		return nil
-	}
-
-	if s.IsDir() {
-		r.path = path.Join(r.path, *defaultFile)
-		if s, err := os.Stat(r.path); err != nil || s.IsDir() {
-			return nil
-		}
-	}
-
-	body, err := ioutil.ReadFile(r.path)
-	if err != nil {
-		return err
-	}
-
-	r.body = body
-	return r.update()
 }
 
 type site struct {
 	sync.RWMutex
-	resources map[string]*resource
-	fancypath string
+	http   map[string]*resource
+	https  map[string]*resource
+	config *SiteConfig
 }
 
+func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
+	st, err := os.Stat(diskpath)
+	if err != nil {
+		return err
+	}
+
+	if st.IsDir() {
+		diskpath = path.Join(diskpath, s.config.DefaultFile)
+		if st, err := os.Stat(diskpath); err != nil || st.IsDir() {
+			return nil
+		}
+	}
+
+	body, err := ioutil.ReadFile(diskpath)
+	if err != nil {
+		return err
+	}
+
+	res := &resource{
+		path:   diskpath,
+		config: s.config,
+		body:   body,
+	}
+
+	res.update()
+
+	if http {
+		s.http[sitepath] = res
+	}
+	if https {
+		s.https[sitepath] = res
+	}
+
+	return nil
+}
+
+func newSite(config *SiteConfig) *site {
+	return &site{
+		http:   make(map[string]*resource),
+		https:  make(map[string]*resource),
+		config: config,
+	}
+}
+
+// sitelist manages a set of sites.
 type sitelist struct {
-	httpSites  map[string]*site
-	httpsSites map[string]*site
-	siteLock   sync.RWMutex
+	sites    map[string]*site
+	siteLock sync.RWMutex
 
 	errNoSuchHost *resource
 	errNoSuchFile *resource
@@ -120,17 +142,10 @@ func (sl *sitelist) status() string {
 
 	var buf string
 
-	buf += fmt.Sprintf("HTTP sites (%d):\n", len(sl.httpSites))
-	for host, site := range sl.httpSites {
+	buf += fmt.Sprintf("Sites (%d):\n", len(sl.sites))
+	for host, site := range sl.sites {
 		site.RLock()
-		buf += fmt.Sprintf("\t%s (%d resources)\n", host, len(site.resources))
-		site.RUnlock()
-	}
-
-	buf += fmt.Sprintf("HTTPS sites (%d):\n", len(sl.httpsSites))
-	for host, site := range sl.httpsSites {
-		site.RLock()
-		buf += fmt.Sprintf("\t%s (%d resources)\n", host, len(site.resources))
+		buf += fmt.Sprintf("\t%s (%d HTTP resources, %d HTTPS resources)\n", host, len(site.http), len(site.https))
 		site.RUnlock()
 	}
 
@@ -143,6 +158,7 @@ func (sl *sitelist) status() string {
 	return buf
 }
 
+// dev flips the development mode switch.
 func (sl *sitelist) dev(active bool) {
 	if active {
 		atomic.StoreUint32(&sl.devmode, 1)
@@ -151,19 +167,11 @@ func (sl *sitelist) dev(active bool) {
 	}
 }
 
+// fetch retrieves the file for a given URL.
 func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	host, _, err := net.SplitHostPort(url.Host)
 	if err != nil {
 		host = url.Host
-	}
-
-	// Select the site based on the schema.
-	var smap map[string]*site
-	switch url.Scheme {
-	case "https":
-		smap = sl.httpsSites
-	default:
-		smap = sl.httpSites
 	}
 
 	// If the devmode flag is set, we reload the entire sitelist. This is by far
@@ -173,8 +181,17 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	}
 
 	sl.siteLock.RLock()
-	s, exists := smap[host]
+	s, exists := sl.sites[host]
 	sl.siteLock.RUnlock()
+
+	// Select the site based on the schema.
+	var rmap map[string]*resource
+	switch url.Scheme {
+	case "https":
+		rmap = s.http
+	default:
+		rmap = s.https
+	}
 
 	// Check if the host existed. If not, serve a 500 no such service.
 	if !exists {
@@ -192,22 +209,26 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	// storing it in the resource map. The resource is loaded from the "fancy"
 	// folder of the vhost directory. If the file cannot be read for any reason,
 	// we will skip to the 404 handling.
-	if s.fancypath != "" && len(p) > len(s.fancypath) && p[:len(s.fancypath)] == s.fancypath {
+	fancypath := s.config.FancyFolder
+	if fancypath != "" && len(p) > len(fancypath) && p[:len(fancypath)] == fancypath {
 		p = path.Join(sl.root, host, "fancy", p)
 		if s, err := os.Stat(p); err != nil || s.IsDir() {
 			goto filenotfound
 		}
-		res = &resource{path: p}
-		if err = res.load(); err != nil {
+		body, err := ioutil.ReadFile(p)
+		if err != nil {
 			goto filenotfound
 		}
-		res.cache = 0
-
+		res = &resource{
+			path: p,
+			body: body,
+		}
+		res.update()
 		return res, 200
 	}
 
 	s.RLock()
-	res, exists = s.resources[p]
+	res, exists = rmap[p]
 	s.RUnlock()
 	if exists {
 		return res, 200
@@ -224,7 +245,7 @@ filenotfound:
 	// Note that all but the configured 404 document can be requested directly,
 	// in which case they will return a 200 OK, not a 404 File Not Found.
 	s.RLock()
-	res, exists = s.resources["/404.html"]
+	res, exists = rmap["/404.html"]
 	s.RUnlock()
 	if exists {
 		return res, 404
@@ -237,23 +258,23 @@ filenotfound:
 	return sl.defErrNoSuchFile, 404
 }
 
+// load reads a root server structure in the format:
+//
+//		example.com/scheme/index.html
+//      example.com/config.toml
+//
+// The initial part of the path is the domain name, used for vhost purposes. The
+// second part is the scheme, which can be "http", "https", "common" or "fancy".
+// The first two are unique to their scheme. Files in "common" are available
+// from both HTTP and HTTPS. Files in "fancy" are used to be served directly
+// from disk, and is loaded on-request. The configuration specifies which
+// (virtual) folder should serve files from fancy. All other files are served
+// completely from memory.
 func (sl *sitelist) load() error {
-	// load reads a root server structure in the format:
-	//
-	//		example.com/http/index.html
-	//
-	// The initial part of the path is the domain name, used for vhost purposes.
-	// The second part is the scheme, which can be "http", "https", "common" or
-	// "fancy". The first two are unique to their scheme. Files in "common" are
-	// available from both HTTP and HTTPS. Files in "fancy" are used to be
-	// served directly from disk, and is loaded on-request. All other files are
-	// served completely from memory.
-
 	// We store the results of the load in local temporary variables, and only
 	// install them on success.
 	var (
-		httpSites     = make(map[string]*site)
-		httpsSites    = make(map[string]*site)
+		sites         = make(map[string]*site)
 		errNoSuchHost *resource
 		errNoSuchFile *resource
 	)
@@ -267,28 +288,52 @@ func (sl *sitelist) load() error {
 	for _, s := range files {
 		name := s.Name()
 
+		p := path.Join(sl.root, name)
+
 		if !s.IsDir() {
 			// Check if it's any server-global resources.
 			switch name {
 			case "404.html":
-				errNoSuchFile = &resource{path: path.Join(sl.root, name)}
-				if err := errNoSuchFile.load(); err != nil {
+				body, err := ioutil.ReadFile(p)
+				if err != nil {
 					return err
 				}
+				errNoSuchFile = &resource{
+					path: p,
+					body: body,
+				}
+				errNoSuchFile.update()
 			case "500.html":
-				errNoSuchHost = &resource{path: path.Join(sl.root, name)}
-				if err := errNoSuchHost.load(); err != nil {
+				body, err := ioutil.ReadFile(p)
+				if err != nil {
 					return err
 				}
+				errNoSuchHost = &resource{
+					path: p,
+					body: body,
+				}
+				errNoSuchHost.update()
 			}
 
 			continue
 		}
 
-		schemes, err := ioutil.ReadDir(path.Join(sl.root, name))
+		schemes, err := ioutil.ReadDir(p)
 		if err != nil {
 			return err
 		}
+
+		conf, err := readSiteConf(path.Join(sl.root, name, "config.toml"))
+		if err != nil {
+			if conf == nil {
+				return err
+			}
+			log.Printf("Cannot read configuration for %s, using default: %v", name, err)
+		}
+
+		s := newSite(conf)
+
+		sites[name] = s
 
 		for _, c := range schemes {
 			if !c.IsDir() {
@@ -307,33 +352,10 @@ func (sl *sitelist) load() error {
 					p2 = "/"
 				}
 
-				res := &resource{path: p}
-				err = res.load()
-				if err != nil {
-					return err
-				}
+				http := scheme == "http" || scheme == "common"
+				https := scheme == "https" || scheme == "common"
+				return s.addResource(p, p2, http, https)
 
-				if scheme == "http" || scheme == "common" {
-					if _, exists := httpSites[name]; !exists {
-						httpSites[name] = &site{
-							resources: make(map[string]*resource),
-							fancypath: sl.fancypath,
-						}
-					}
-					httpSites[name].resources[p2] = res
-				}
-
-				if scheme == "https" || scheme == "common" {
-					if _, exists := httpsSites[name]; !exists {
-						httpsSites[name] = &site{
-							resources: make(map[string]*resource),
-							fancypath: sl.fancypath,
-						}
-					}
-					httpsSites[name].resources[p2] = res
-				}
-
-				return nil
 			})
 
 			if err != nil {
@@ -344,8 +366,7 @@ func (sl *sitelist) load() error {
 
 	// We're done, so install the results.
 	sl.siteLock.Lock()
-	sl.httpSites = httpSites
-	sl.httpsSites = httpsSites
+	sl.sites = sites
 	sl.errNoSuchFile = errNoSuchFile
 	sl.errNoSuchHost = errNoSuchHost
 	sl.siteLock.Unlock()
@@ -353,6 +374,7 @@ func (sl *sitelist) load() error {
 	return nil
 }
 
+// cmdhttp is the command handler. It implements http.Handler.
 func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 	switch req.URL.Path {
 	case "/devel":
@@ -395,6 +417,8 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// http is the actual HTTP handler, serving the requests as quickly as it can.
+// It implements http.Handler.
 func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	// We patch up the URL object for convenience.
 	if req.Host == "" {
@@ -416,8 +440,9 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	case "HEAD":
 		head = true
 	default:
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(405)
-		w.Write([]byte("<!doctype html><html><body><h1>405 Method Not Allowed</h1></body></html>\n"))
+		w.Write([]byte("method not allowed"))
 		access(req, 405)
 		return
 	}

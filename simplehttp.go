@@ -2,54 +2,73 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
 var (
-	defaultFile = flag.String("defaultFile", "index.html", "the file to serve when a dir is requested")
-	rootdir     = flag.String("rootdir", "", "the dir to serve from")
-	fromdisk    = flag.String("fromdisk", "", "a dir relative to rootdir to always serve fresh from disk without cache")
-	development = flag.Bool("dev", false, "reload on every request")
-	address     = flag.String("address", "", "address to listen on")
-	tls         = flag.String("tls", "", "address to serve TLS on")
-	tlscert     = flag.String("tlscert", "", "tls certificate path")
-	tlskey      = flag.String("tlskey", "", "tls key path")
-	logfile     = flag.String("logfile", "", "file to write log to")
-	cmdaddr     = flag.String("cmdaddr", "", "addr to listen for cmds on")
-	defaulthost = flag.String("defaulthost", "", "default host when none is provided")
+	configFile  = flag.String("config", "/etc/simplehttp/config.toml", "the config file to use")
+	rootdir     = flag.String("rootdir", "", "the dir to serve from (if no config set)")
+	address     = flag.String("address", "", "address to listen on (if no config set)")
+	development = flag.Bool("dev", false, "reload on every request (if no config set)")
 )
 
 func main() {
 	var err error
 	flag.Parse()
-	if *logfile != "" {
-		log.SetOutput(&RotateWriter{Interval: 24 * time.Hour, Root: *logfile})
+
+	conf, err := readServerConf(*configFile)
+	if err != nil {
+		if conf == nil {
+			log.Printf("Cannot read configuration for server: %v", err)
+			return
+		}
+		log.Printf("Cannot read configuration for server, using default: %v", err)
 	}
 
-	if *rootdir == "" {
-		log.Printf("Missing directory to serve")
+	if *rootdir != "" {
+		conf.Root = *rootdir
+	}
+	if *address != "" {
+		conf.HTTP.Address = *address
+	}
+	if *development != false {
+		conf.Development = *development
+	}
+
+	if conf.LogFile != "" {
+		rw := newRotateWriter(conf.LogFile, conf.LogLines)
+		go func() {
+			fmt.Fprintf(os.Stderr, "RotateWriter terminated: %v\n", rw.Serve())
+		}()
+		log.SetOutput(rw)
+	}
+
+	if conf.Root == "" {
+		fmt.Fprintf(os.Stderr, "Missing directory to serve\n")
 		flag.Usage()
 		return
 	}
 
-	if *address == "" && *tls == "" {
-		log.Printf("Missing address to serve")
+	if conf.HTTP.Address == "" && conf.HTTPS.Address == "" {
+		fmt.Fprintf(os.Stderr, "Missing address to serve\n")
 		flag.Usage()
 		return
 	}
 
-	if *tls != "" && (*tlscert == "" || *tlskey == "") {
-		log.Printf("Missing key/cert for tls")
+	if conf.HTTPS.Address != "" && (conf.HTTPS.Cert == "" || conf.HTTPS.Key == "") {
+		fmt.Fprintf(os.Stderr, "Missing key/cert for tls\n")
 		flag.Usage()
 		return
 	}
 
 	sl := &sitelist{
-		root:        *rootdir,
-		defaulthost: *defaulthost,
+		root:        conf.Root,
+		defaulthost: conf.DefaultHost,
 		defErrNoSuchHost: &resource{
 			body:    []byte("no such service"),
 			cnttype: "text/plain",
@@ -64,16 +83,16 @@ func main() {
 	sl.defErrNoSuchHost.update()
 
 	if err = sl.load(); err != nil {
-		log.Printf("Unable to walk files: %v", err)
+		fmt.Fprintf(os.Stderr, "Unable to walk files: %v\n", err)
 		return
 	}
 
 	sl.dev(*development)
 
-	if *cmdaddr != "" {
+	if conf.Command.Address != "" {
 		go func() {
 			s := &http.Server{
-				Addr:         *cmdaddr,
+				Addr:         conf.Command.Address,
 				Handler:      http.HandlerFunc(sl.cmdhttp),
 				ReadTimeout:  10 * time.Second,
 				WriteTimeout: 10 * time.Second,
@@ -83,11 +102,11 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	if *address != "" {
+	if conf.HTTP.Address != "" {
 		wg.Add(1)
 		go func() {
 			s := &http.Server{
-				Addr:         *address,
+				Addr:         conf.HTTP.Address,
 				Handler:      http.HandlerFunc(sl.http),
 				ReadTimeout:  30 * time.Second,
 				WriteTimeout: 10 * time.Minute,
@@ -97,17 +116,17 @@ func main() {
 		}()
 	}
 
-	if *tls != "" {
+	if conf.HTTPS.Address != "" {
 		wg.Add(1)
 		go func() {
 			s := &http.Server{
-				Addr:         *tls,
+				Addr:         conf.HTTPS.Address,
 				Handler:      http.HandlerFunc(sl.http),
 				ReadTimeout:  30 * time.Second,
 				WriteTimeout: 10 * time.Minute,
 			}
 
-			log.Fatal(s.ListenAndServeTLS(*tlscert, *tlskey))
+			log.Fatal(s.ListenAndServeTLS(conf.HTTPS.Cert, conf.HTTPS.Key))
 			wg.Done()
 		}()
 	}
