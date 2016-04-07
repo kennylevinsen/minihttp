@@ -66,7 +66,7 @@ var (
 	}
 	DefaultSiteConfig = SiteConfig{
 		DefaultFile:             "index.html",
-		FancyFolder:             "f/",
+		FancyFolder:             "/f/",
 		CacheTimes:              DefaultCacheTimes,
 		DefaultCacheTime:        Duration{Duration: time.Hour},
 		MinimumCompressionRatio: 1.1,
