@@ -34,11 +34,31 @@ type ConfigCommand struct {
 }
 
 type SiteConfig struct {
-	DefaultFile             string
-	FancyFolder             string
-	CacheTimes              map[string]Duration
-	DefaultCacheTime        Duration
-	MinimumCompressionRatio float64
+	General     *SiteConfigGeneral
+	Cache       *SiteConfigCache
+	Compression *SiteConfigCompression
+}
+
+type SiteConfigGeneral struct {
+	NoDefaultFile bool
+	DefaultFile   string
+	FancyFolder   string
+}
+
+type SiteConfigCache struct {
+	NoCacheFromMem   bool
+	NoCacheFromDisk  bool
+	CacheTimes       map[string]Duration
+	DefaultCacheTime Duration
+	Blacklist        []string
+}
+
+type SiteConfigCompression struct {
+	NoCompressFromMem  bool
+	NoCompressFromDisk bool
+	MinSize            int
+	MinRatio           float64
+	Blacklist          []string
 }
 
 type Duration struct {
@@ -65,11 +85,24 @@ var (
 		".css":   oneWeek,
 	}
 	DefaultSiteConfig = SiteConfig{
-		DefaultFile:             "index.html",
-		FancyFolder:             "/f/",
-		CacheTimes:              DefaultCacheTimes,
-		DefaultCacheTime:        Duration{Duration: time.Hour},
-		MinimumCompressionRatio: 1.1,
+		General: &SiteConfigGeneral{
+			DefaultFile: "index.html",
+			FancyFolder: "/f/",
+		},
+		Cache: &SiteConfigCache{
+			CacheTimes:       DefaultCacheTimes,
+			DefaultCacheTime: Duration{Duration: time.Hour},
+		},
+		Compression: &SiteConfigCompression{
+			Blacklist: []string{
+				".jpg",
+				".zip",
+				".gz",
+				".tgz",
+			},
+			MinSize:  256,
+			MinRatio: 1.1,
+		},
 	}
 	DefaultConfig = Config{
 		Root: "/srv/web",
@@ -95,6 +128,16 @@ func readSiteConf(p string) (*SiteConfig, error) {
 
 	if err := toml.Unmarshal(b, &conf); err != nil {
 		return nil, err
+	}
+
+	if conf.General == nil {
+		conf.General = DefaultSiteConfig.General
+	}
+	if conf.Cache == nil {
+		conf.Cache = DefaultSiteConfig.Cache
+	}
+	if conf.Compression == nil {
+		conf.Compression = DefaultSiteConfig.Compression
 	}
 
 	return &conf, nil

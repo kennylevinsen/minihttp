@@ -72,10 +72,12 @@ func main() {
 		defErrNoSuchHost: &resource{
 			body:    []byte("no such service"),
 			cnttype: "text/plain",
+			config:  &DefaultSiteConfig,
 		},
 		defErrNoSuchFile: &resource{
 			body:    []byte("no such file"),
 			cnttype: "text/plain",
+			config:  &DefaultSiteConfig,
 		},
 	}
 

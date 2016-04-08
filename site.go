@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"mime"
@@ -26,42 +27,95 @@ func access(req *http.Request, status int) {
 }
 
 type resource struct {
-	body    []byte
-	gzip    []byte
-	cnttype string
-	cache   time.Duration
-	loaded  time.Time
-	hash    string
-	path    string
-	config  *SiteConfig
+	body     []byte
+	gzip     []byte
+	cnttype  string
+	cache    time.Duration
+	loaded   time.Time
+	hash     string
+	path     string
+	fromDisk bool
+	config   *SiteConfig
 }
 
 // update updates all information about the resource, given a body and a path.
 // Its use eases synthetic content creation.
 func (r *resource) update() {
-	var mincomp float64
-	ext := path.Ext(r.path)
+	var (
+		cacheconf    = r.config.Cache
+		compressconf = r.config.Compression
+		ext          = path.Ext(r.path)
+		mincompsize  = 256
+		mincompratio = 1.1
+		buf          *bytes.Buffer
+		gz           io.WriteCloser
+	)
 
-	if r.config != nil {
-		mincomp = r.config.MinimumCompressionRatio
-		if x, exists := r.config.CacheTimes[ext]; exists {
-			r.cache = x.Duration
-		} else {
-			r.cache = r.config.DefaultCacheTime.Duration
+	// Evaluate cache time.
+	switch {
+	case r.fromDisk && cacheconf.NoCacheFromDisk:
+		goto cachedone
+	case !r.fromDisk && cacheconf.NoCacheFromMem:
+		goto cachedone
+	}
+
+	if cacheconf.Blacklist != nil {
+		for _, v := range cacheconf.Blacklist {
+			if ext == v {
+				goto cachedone
+			}
 		}
 	}
 
-	buf := new(bytes.Buffer)
-	gz := gzip.NewWriter(buf)
+	if x, exists := cacheconf.CacheTimes[ext]; exists {
+		r.cache = x.Duration
+	} else {
+		r.cache = cacheconf.DefaultCacheTime.Duration
+	}
+
+cachedone:
+
+	// Evaluate compression.
+	switch {
+	case r.fromDisk && compressconf.NoCompressFromDisk:
+		goto compdone
+	case !r.fromDisk && compressconf.NoCompressFromMem:
+		goto compdone
+	}
+
+	if compressconf.MinSize != 0 {
+		mincompsize = compressconf.MinSize
+	}
+
+	if mincompsize != 0 && len(r.body) > mincompsize {
+		goto compdone
+	}
+
+	if compressconf.Blacklist != nil {
+		for _, v := range compressconf.Blacklist {
+			if ext == v {
+				goto compdone
+			}
+		}
+	}
+
+	if compressconf.MinRatio != 0 {
+		mincompratio = compressconf.MinRatio
+	}
+
+	buf = new(bytes.Buffer)
+	gz = gzip.NewWriter(buf)
 	gz.Write(r.body)
 	gz.Close()
 	r.gzip = buf.Bytes()
 
-	if mincomp == 0 || float64(len(r.gzip))*mincomp >= float64(len(r.body)) {
-		// The compression is too weak.
+	if float64(len(r.gzip))*mincompratio >= float64(len(r.body)) {
 		r.gzip = nil
 	}
 
+compdone:
+
+	// Hash and wrap thing sup.
 	h := sha256.Sum256(r.body)
 	r.hash = hex.EncodeToString(h[:])
 	r.cnttype = mime.TypeByExtension(ext)
@@ -82,7 +136,7 @@ func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
 	}
 
 	if st.IsDir() {
-		diskpath = path.Join(diskpath, s.config.DefaultFile)
+		diskpath = path.Join(diskpath, s.config.General.DefaultFile)
 		if st, err := os.Stat(diskpath); err != nil || st.IsDir() {
 			return nil
 		}
@@ -167,9 +221,19 @@ func (sl *sitelist) dev(active bool) {
 	}
 }
 
-// fetch retrieves the file for a given URL.
+// fetch retrieves the file for a given URL. This is where the work happens, so
+// it must stay simple and fast.
 func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
-	host, _, err := net.SplitHostPort(url.Host)
+	var (
+		host, p, fancypath string
+		err                error
+		exists             bool
+		s                  *site
+		res                *resource
+		body               []byte
+	)
+
+	host, _, err = net.SplitHostPort(url.Host)
 	if err != nil {
 		host = url.Host
 	}
@@ -181,8 +245,16 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	}
 
 	sl.siteLock.RLock()
-	s, exists := sl.sites[host]
+	s, exists = sl.sites[host]
 	sl.siteLock.RUnlock()
+
+	// Check if the host existed. If not, serve a 500 no such service.
+	if !exists {
+		if sl.errNoSuchHost != nil {
+			return sl.errNoSuchHost, 500
+		}
+		return sl.defErrNoSuchHost, 500
+	}
 
 	// Select the site based on the schema.
 	var rmap map[string]*resource
@@ -193,32 +265,26 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 		rmap = s.https
 	}
 
-	// Check if the host existed. If not, serve a 500 no such service.
-	if !exists {
-		if sl.errNoSuchHost != nil {
-			return sl.errNoSuchHost, 500
-		}
-		return sl.defErrNoSuchHost, 500
-	}
-
-	var res *resource
-	p := path.Clean(url.Path)
+	p = path.Clean(url.Path)
 
 	// Check if we need to serve directly from disk. We verify if the fancypath
 	// path prefix matches, and if so, try to load a resource directly, without
 	// storing it in the resource map. The resource is loaded from the "fancy"
 	// folder of the vhost directory. If the file cannot be read for any reason,
 	// we will skip to the 404 handling.
-	fancypath := s.config.FancyFolder
+	fancypath = s.config.General.FancyFolder
 	if fancypath != "" && len(p) > len(fancypath) && p[:len(fancypath)] == fancypath {
 		p = path.Join(sl.root, host, "fancy", p)
-		body, err := ioutil.ReadFile(p)
+		body, err = ioutil.ReadFile(p)
 		if err != nil {
+			log.Printf("Error trying to read file \"%s\" from disk: %v", p, err)
 			goto filenotfound
 		}
 		res = &resource{
-			path: p,
-			body: body,
+			path:     p,
+			body:     body,
+			config:   s.config,
+			fromDisk: true,
 		}
 		res.update()
 		return res, 200
@@ -227,6 +293,7 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	s.RLock()
 	res, exists = rmap[p]
 	s.RUnlock()
+
 	if exists {
 		return res, 200
 	}
@@ -296,8 +363,9 @@ func (sl *sitelist) load() error {
 					return err
 				}
 				errNoSuchFile = &resource{
-					path: p,
-					body: body,
+					path:   p,
+					body:   body,
+					config: &DefaultSiteConfig,
 				}
 				errNoSuchFile.update()
 			case "500.html":
@@ -306,8 +374,9 @@ func (sl *sitelist) load() error {
 					return err
 				}
 				errNoSuchHost = &resource{
-					path: p,
-					body: body,
+					path:   p,
+					body:   body,
+					config: &DefaultSiteConfig,
 				}
 				errNoSuchHost.update()
 			}
@@ -414,9 +483,32 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// quickHeaderGet bypasses net/textproto/MIMEHeader.CanonicalMIMEHeaderKey,
+// which would otherwise have been run on the key. This is a waste of time if we
+// manually canonicalize the query key.
+func quickHeaderGet(key string, h http.Header) (string, bool) {
+	val := h[key]
+	if len(val) == 0 {
+		return "", false
+	}
+	return val[0], true
+}
+
 // http is the actual HTTP handler, serving the requests as quickly as it can.
 // It implements http.Handler.
 func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
+	var (
+		ifNoneMatch, ifModifiedSince, acceptEncoding string
+		head, cacheResponse, exists                  bool
+		now                                          = time.Now()
+		h                                            = w.Header()
+		r                                            *resource
+		body                                         []byte
+		status                                       int
+		imsdate                                      time.Time
+		err                                          error
+	)
+
 	// We patch up the URL object for convenience.
 	if req.Host == "" {
 		req.URL.Host = sl.defaulthost
@@ -430,34 +522,31 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Evaluate method
-	var head bool
 	switch req.Method {
 	case "GET":
 		// do nothing
 	case "HEAD":
 		head = true
 	default:
-		w.Header().Set("Content-Type", "text/plain")
+		h["Content-Type"] = []string{"text/plain"}
 		w.WriteHeader(405)
 		w.Write([]byte("method not allowed"))
 		access(req, 405)
 		return
 	}
 
-	r, status := sl.fetch(req.URL)
-	now := time.Now()
+	r, status = sl.fetch(req.URL)
 
 	// Set headers
-	h := w.Header()
 	if r.cnttype != "" {
-		h.Set("Content-Type", r.cnttype)
+		h["Content-Type"] = []string{r.cnttype}
 	}
-	h.Set("Etag", r.hash)
-	h.Set("Date", now.Format(time.RFC1123))
-	h.Set("Last-Modified", r.loaded.Format(time.RFC1123))
-	h.Set("Cache-Control", fmt.Sprintf("public, max-age=%.0f", r.cache.Seconds()))
-	h.Set("Expires", now.Add(r.cache).Format(time.RFC1123))
-	h.Set("Vary", "Accept-Encoding")
+	h["Etag"] = []string{r.hash}
+	h["Date"] = []string{now.Format(time.RFC1123)}
+	h["Last-Modified"] = []string{r.loaded.Format(time.RFC1123)}
+	h["Cache-Control"] = []string{fmt.Sprintf("public, max-age=%.0f", r.cache.Seconds())}
+	h["Expires"] = []string{now.Add(r.cache).Format(time.RFC1123)}
+	h["Vary"] = []string{"Accept-Encoding"}
 
 	// Should we send a 304 Not Modified? We do this if the file was found, and
 	// the cache information headers from the client match the file we have
@@ -466,13 +555,11 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	// like a HEAD does. This means we have to interrupt the request at
 	// different points of their execution... *sigh*
 	if status == 200 {
-		cacheResponse := false
-		ifModifiedSince := req.Header.Get("If-Modified-Since")
-		ifNoneMatch := req.Header.Get("If-None-Match")
-		if ifNoneMatch != "" {
+		cacheResponse = false
+		if ifNoneMatch, exists = quickHeaderGet("If-None-Match", h); exists {
 			cacheResponse = ifNoneMatch == r.hash
-		} else if ifModifiedSince != "" {
-			imsdate, err := time.Parse(time.RFC1123, ifModifiedSince)
+		} else if ifModifiedSince, exists = quickHeaderGet("If-Modified-Since", h); exists {
+			imsdate, err = time.Parse(time.RFC1123, ifModifiedSince)
 			cacheResponse = err == nil && imsdate.After(r.loaded)
 		}
 
@@ -483,15 +570,16 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	body = r.body
+
 	// Compressed?
-	var b []byte
-	if r.gzip != nil && strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
-		h.Set("Content-Encoding", "gzip")
-		b = r.gzip
-	} else {
-		b = r.body
+	if r.gzip != nil {
+		if acceptEncoding, exists = quickHeaderGet("Accept-Encoding", h); exists && strings.Contains(acceptEncoding, "gzip") {
+			h["Content-Encoding"] = []string{"gzip"}
+			body = r.gzip
+		}
 	}
-	h.Set("Content-Length", fmt.Sprintf("%d", len(b)))
+	h["Content-Length"] = []string{fmt.Sprintf("%d", len(body))}
 
 	w.WriteHeader(status)
 	access(req, status)
@@ -501,7 +589,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if _, err := w.Write(b); err != nil {
+	if _, err = w.Write(body); err != nil {
 		log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
 	}
 }
