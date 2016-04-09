@@ -296,8 +296,8 @@ filenotfound:
 	// * The root directory itself, if available.
 	// * The configured default document.
 	//
-	// Note that all but the configured 404 document can be requested directly,
-	// in which case they will return a 200 OK, not a 404 File Not Found.
+	// Note that the 404 document can be requested directly, in which case they
+	// will return a 200 OK, not a 404 File Not Found.
 	s.RLock()
 	res, exists = rmap["/404.html"]
 	s.RUnlock()
