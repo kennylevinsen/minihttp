@@ -23,7 +23,15 @@ import (
 )
 
 func access(req *http.Request, status int) {
-	log.Printf("[%s]: %s \"%v\" %s %d", req.RemoteAddr, req.Method, req.URL, req.Proto, status)
+	var forwardAddr, userAgent string
+	var exists bool
+	if forwardAddr, exists = quickHeaderGetLast("X-Forwarded-For", req.Header); !exists {
+		forwardAddr = "-"
+	}
+	if userAgent, exists = quickHeaderGet("User-Agent", req.Header); !exists {
+		userAgent = "-"
+	}
+	log.Printf("[%s] (%s): %d \"%s %v %s\" \"%s\"", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, userAgent)
 }
 
 type resource struct {
@@ -470,6 +478,16 @@ func quickHeaderGet(key string, h http.Header) (string, bool) {
 		return "", false
 	}
 	return val[0], true
+}
+
+// quickHeaderGetLast works like quickHeaderGet, but fetches the last instance
+// of the header.
+func quickHeaderGetLast(key string, h http.Header) (string, bool) {
+	val := h[key]
+	if len(val) == 0 {
+		return "", false
+	}
+	return val[len(val)-1], true
 }
 
 // http is the actual HTTP handler, serving the requests as quickly as it can.
