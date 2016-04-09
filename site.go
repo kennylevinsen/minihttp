@@ -262,9 +262,9 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	// Select the site based on the schema.
 	switch url.Scheme {
 	case "https":
-		rmap = s.http
-	default:
 		rmap = s.https
+	default:
+		rmap = s.http
 	}
 
 	s.RLock()
