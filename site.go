@@ -533,9 +533,9 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	// different points of their execution... *sigh*
 	if status == 200 {
 		cacheResponse = false
-		if ifNoneMatch, exists = quickHeaderGet("If-None-Match", h); exists {
+		if ifNoneMatch, exists = quickHeaderGet("If-None-Match", req.Header); exists {
 			cacheResponse = ifNoneMatch == r.hash
-		} else if ifModifiedSince, exists = quickHeaderGet("If-Modified-Since", h); exists {
+		} else if ifModifiedSince, exists = quickHeaderGet("If-Modified-Since", req.Header); exists {
 			imsdate, err = time.Parse(time.RFC1123, ifModifiedSince)
 			cacheResponse = err == nil && imsdate.After(r.loaded)
 		}
@@ -551,7 +551,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 
 	// Compressed?
 	if r.gzip != nil {
-		if acceptEncoding, exists = quickHeaderGet("Accept-Encoding", h); exists && strings.Contains(acceptEncoding, "gzip") {
+		if acceptEncoding, exists = quickHeaderGet("Accept-Encoding", req.Header); exists && strings.Contains(acceptEncoding, "gzip") {
 			h["Content-Encoding"] = []string{"gzip"}
 			body = r.gzip
 		}
