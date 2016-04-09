@@ -312,6 +312,7 @@ filenotfound:
 // (virtual) folder should serve files from fancy. All other files are served
 // completely from memory.
 func (sl *sitelist) load() error {
+	log.Printf("Reloading root")
 	// We store the results of the load in local temporary variables, and only
 	// install them on success.
 	var (
