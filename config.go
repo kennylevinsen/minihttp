@@ -4,7 +4,7 @@ import (
 	"io/ioutil"
 	"time"
 )
-import "github.com/naoina/toml"
+import "github.com/influxdata/toml"
 
 type Config struct {
 	Root string
@@ -50,7 +50,6 @@ type SiteConfigCache struct {
 	NoCacheFromDisk  bool
 	CacheTimes       map[string]Duration
 	DefaultCacheTime Duration
-	Blacklist        []string
 }
 
 type SiteConfigCompression struct {
@@ -65,9 +64,9 @@ type Duration struct {
 	time.Duration
 }
 
-func (d *Duration) UnmarshalTOML(data []byte) error {
+func (d *Duration) UnmarshalTOML(text []byte) error {
 	var err error
-	d.Duration, err = time.ParseDuration(string(data))
+	d.Duration, err = time.ParseDuration(string(text[1 : len(text)-1]))
 	return err
 }
 
