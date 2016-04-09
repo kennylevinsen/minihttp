@@ -93,8 +93,8 @@ func main() {
 		},
 	}
 
-	sl.defErrNoSuchFile.update()
-	sl.defErrNoSuchHost.update()
+	sl.defErrNoSuchFile.updateAll()
+	sl.defErrNoSuchHost.updateAll()
 
 	if err = sl.load(); err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to walk files: %v\n", err)

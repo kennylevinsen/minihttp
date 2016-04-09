@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"mime"
@@ -46,8 +45,22 @@ type resource struct {
 	config   *SiteConfig
 }
 
-// update updates all information about the resource, given a body and a path.
-// Its use eases synthetic content creation.
+// updateAll does everything update does, but also gzips the content and
+// generates the hash.
+func (r *resource) updateAll() {
+	buf := new(bytes.Buffer)
+	gz := gzip.NewWriter(buf)
+	gz.Write(r.body)
+	gz.Close()
+	r.gzip = buf.Bytes()
+
+	h := sha256.Sum256(r.body)
+	r.hash = hex.EncodeToString(h[:])
+
+	r.update()
+}
+
+// update updates cache, compression, content-type and last-modified time.
 func (r *resource) update() {
 	var (
 		cacheconf    = r.config.Cache
@@ -55,8 +68,6 @@ func (r *resource) update() {
 		ext          = path.Ext(r.path)
 		mincompsize  = compressconf.MinSize
 		mincompratio = compressconf.MinRatio
-		buf          *bytes.Buffer
-		gz           io.WriteCloser
 	)
 
 	if compressconf.MinSize == 0 {
@@ -90,23 +101,20 @@ func (r *resource) update() {
 		}
 	}
 
-	buf = new(bytes.Buffer)
-	gz = gzip.NewWriter(buf)
-	gz.Write(r.body)
-	gz.Close()
-	r.gzip = buf.Bytes()
-
 	if float64(len(r.gzip))*mincompratio >= float64(len(r.body)) {
+		// Clear gzip.
 		r.gzip = nil
 	}
 
 compdone:
 
-	// Hash and wrap thing sup.
-	h := sha256.Sum256(r.body)
-	r.hash = hex.EncodeToString(h[:])
 	r.cnttype = mime.TypeByExtension(ext)
 	r.loaded = time.Now()
+}
+
+type cache struct {
+	plain []byte
+	gzip  []byte
 }
 
 type site struct {
@@ -116,9 +124,7 @@ type site struct {
 	config *SiteConfig
 }
 
-func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
-	// TODO(kl): Deduplicate resources by sha or diskpath!
-
+func (s *site) addResource(diskpath, sitepath string, cachemap map[string]*cache, http, https bool) error {
 	st, err := os.Stat(diskpath)
 	if err != nil {
 		return err
@@ -136,15 +142,38 @@ func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
 		}
 	}
 
-	body, err := ioutil.ReadFile(diskpath)
+	var gzipBody, body []byte
+	body, err = ioutil.ReadFile(diskpath)
 	if err != nil {
 		return err
+	}
+
+	h := sha256.Sum256(body)
+	hash := hex.EncodeToString(h[:])
+
+	// Check if we already have this content read so we can deduplicate it.
+	if cached, exists := cachemap[hash]; exists {
+		body = cached.plain
+		gzipBody = cached.gzip
+	} else {
+		buf := new(bytes.Buffer)
+		gz := gzip.NewWriter(buf)
+		gz.Write(body)
+		gz.Close()
+		gzipBody = buf.Bytes()
+
+		cachemap[hash] = &cache{
+			plain: body,
+			gzip:  gzipBody,
+		}
 	}
 
 	res := &resource{
 		path:   diskpath,
 		config: s.config,
 		body:   body,
+		gzip:   gzipBody,
+		hash:   hash,
 	}
 
 	res.update()
@@ -181,6 +210,9 @@ type sitelist struct {
 	root        string
 	devmode     uint32
 	defaulthost string
+
+	// stats
+	filesInMemory int
 }
 
 func (sl *sitelist) status() string {
@@ -195,11 +227,13 @@ func (sl *sitelist) status() string {
 		buf += fmt.Sprintf("\t%s (%d HTTP resources, %d HTTPS resources)\n", host, len(site.http), len(site.https))
 		site.RUnlock()
 	}
-
-	buf += fmt.Sprintf("Root: %s\n", sl.root)
-	buf += fmt.Sprintf("Dev mode: %t\n", atomic.LoadUint32(&sl.devmode) == 1)
-	buf += fmt.Sprintf("No such host: %t\n", sl.errNoSuchHost == nil)
-	buf += fmt.Sprintf("No such file: %t\n", sl.errNoSuchFile == nil)
+	buf += "\nSettings:\n"
+	buf += fmt.Sprintf("\tRoot: %s\n", sl.root)
+	buf += fmt.Sprintf("\tDev mode: %t\n", atomic.LoadUint32(&sl.devmode) == 1)
+	buf += fmt.Sprintf("\tNo such host: %t\n", sl.errNoSuchHost == nil)
+	buf += fmt.Sprintf("\tNo such file: %t\n", sl.errNoSuchFile == nil)
+	buf += "\nStats:\n"
+	buf += fmt.Sprintf("\tFiles in memory: %d\n", sl.filesInMemory)
 
 	return buf
 }
@@ -268,7 +302,7 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 			config:   s.config,
 			fromDisk: true,
 		}
-		res.update()
+		res.updateAll()
 		return res, 200
 	}
 
@@ -340,6 +374,8 @@ func (sl *sitelist) load() error {
 		return err
 	}
 
+	cachemap := make(map[string]*cache)
+
 	for _, s := range files {
 		name := s.Name()
 
@@ -358,7 +394,7 @@ func (sl *sitelist) load() error {
 					body:   body,
 					config: &DefaultSiteConfig,
 				}
-				errNoSuchFile.update()
+				errNoSuchFile.updateAll()
 			case "500.html":
 				body, err := ioutil.ReadFile(p)
 				if err != nil {
@@ -369,7 +405,7 @@ func (sl *sitelist) load() error {
 					body:   body,
 					config: &DefaultSiteConfig,
 				}
-				errNoSuchHost.update()
+				errNoSuchHost.updateAll()
 			}
 
 			continue
@@ -411,7 +447,7 @@ func (sl *sitelist) load() error {
 
 				http := scheme == "http" || scheme == "common"
 				https := scheme == "https" || scheme == "common"
-				return s.addResource(p, p2, http, https)
+				return s.addResource(p, p2, cachemap, http, https)
 
 			})
 
@@ -423,6 +459,7 @@ func (sl *sitelist) load() error {
 
 	// We're done, so install the results.
 	sl.siteLock.Lock()
+	sl.filesInMemory = len(cachemap)
 	sl.sites = sites
 	sl.errNoSuchFile = errNoSuchFile
 	sl.errNoSuchHost = errNoSuchHost
