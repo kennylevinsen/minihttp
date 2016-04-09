@@ -48,8 +48,8 @@ And that's it!
 
 If you want to run on port 80 on a Linux box, I would highly recommend setting the appropriate capabilities, rather than running the server as root:
 ```text
-sudo setcap cap_net_bind_service=+ep ./minihttp
-./minihttp -rootdir web -address :80
+sudo setcap cap_net_bind_service=+ep $(which minihttp)
+minihttp -rootdir web -address :80
 ```
 
 ### Server configuration
