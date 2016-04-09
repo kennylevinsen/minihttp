@@ -155,7 +155,7 @@ Given the previously mentioned file structure, put the file in web/example.com/c
 
 The server includes a hardcoded 404 page for when files don't exist or can't be read, as well as a 500 page for when a hostname is not known to the server.
 
-A 404.html and 500.html can be put in the rootdir ("web/404.html" in the examples), which will replace the builtin variants. Furthermore, a 404.html can be put in the site folder ("web/example.com/404.html" in the examples), which will apply only to that site.
+A 404.html and 500.html can be put in the rootdir ("web/404.html" and "web/500.html" in the example folder above), which will replace the builtin variants. Furthermore, a 404.html can be put in the site folder ("web/example.com/404.html" in the example folder above), which will apply only to that site.
 
 ### Command API
 
