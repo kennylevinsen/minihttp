@@ -45,62 +45,41 @@ func (r *resource) update() {
 		cacheconf    = r.config.Cache
 		compressconf = r.config.Compression
 		ext          = path.Ext(r.path)
-		mincompsize  = 256
-		mincompratio = 1.1
+		mincompsize  = compressconf.MinSize
+		mincompratio = compressconf.MinRatio
 		buf          *bytes.Buffer
 		gz           io.WriteCloser
 	)
 
-	// Evaluate cache time.
-	switch {
-	case r.fromDisk && cacheconf.NoCacheFromDisk:
-		goto cachedone
-	case !r.fromDisk && cacheconf.NoCacheFromMem:
-		goto cachedone
+	if compressconf.MinSize == 0 {
+		mincompsize = DefaultSiteConfig.Compression.MinSize
+	}
+	if compressconf.MinRatio == 0 {
+		mincompratio = DefaultSiteConfig.Compression.MinRatio
 	}
 
-	if cacheconf.Blacklist != nil {
-		for _, v := range cacheconf.Blacklist {
-			if ext == v {
-				goto cachedone
-			}
+	// Evaluate cache time.
+	if (!r.fromDisk && !cacheconf.NoCacheFromMem) ||
+		(r.fromDisk && !cacheconf.NoCacheFromDisk) {
+
+		if x, exists := cacheconf.CacheTimes[ext]; exists {
+			r.cache = x.Duration
+		} else {
+			r.cache = cacheconf.DefaultCacheTime.Duration
 		}
 	}
-
-	if x, exists := cacheconf.CacheTimes[ext]; exists {
-		r.cache = x.Duration
-	} else {
-		r.cache = cacheconf.DefaultCacheTime.Duration
-	}
-
-cachedone:
 
 	// Evaluate compression.
-	switch {
-	case r.fromDisk && compressconf.NoCompressFromDisk:
-		goto compdone
-	case !r.fromDisk && compressconf.NoCompressFromMem:
-		goto compdone
-	}
-
-	if compressconf.MinSize != 0 {
-		mincompsize = compressconf.MinSize
-	}
-
-	if mincompsize != 0 && len(r.body) > mincompsize {
+	if (r.fromDisk && compressconf.NoCompressFromDisk) ||
+		(!r.fromDisk && compressconf.NoCompressFromMem) ||
+		len(r.body) < mincompsize {
 		goto compdone
 	}
 
-	if compressconf.Blacklist != nil {
-		for _, v := range compressconf.Blacklist {
-			if ext == v {
-				goto compdone
-			}
+	for _, v := range compressconf.Blacklist {
+		if ext == v {
+			goto compdone
 		}
-	}
-
-	if compressconf.MinRatio != 0 {
-		mincompratio = compressconf.MinRatio
 	}
 
 	buf = new(bytes.Buffer)
