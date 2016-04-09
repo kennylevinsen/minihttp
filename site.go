@@ -117,6 +117,8 @@ type site struct {
 }
 
 func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
+	// TODO(kl): Deduplicate resources by sha or diskpath!
+
 	st, err := os.Stat(diskpath)
 	if err != nil {
 		return err
@@ -125,6 +127,11 @@ func (s *site) addResource(diskpath, sitepath string, http, https bool) error {
 	if st.IsDir() {
 		diskpath = path.Join(diskpath, s.config.General.DefaultFile)
 		if st, err := os.Stat(diskpath); err != nil || st.IsDir() {
+			// We're here because the path addResource was called with was a
+			// directory, and the directory either lacked the default file, or
+			// the default file was a directory as well. Not being able to
+			// associate a default file with a directory is not an error, so we
+			// just skip the entry.
 			return nil
 		}
 	}
@@ -172,7 +179,6 @@ type sitelist struct {
 	defErrNoSuchFile *resource
 
 	root        string
-	fancypath   string
 	devmode     uint32
 	defaulthost string
 }
@@ -191,7 +197,6 @@ func (sl *sitelist) status() string {
 	}
 
 	buf += fmt.Sprintf("Root: %s\n", sl.root)
-	buf += fmt.Sprintf("Fancy path: %s\n", sl.fancypath)
 	buf += fmt.Sprintf("Dev mode: %t\n", atomic.LoadUint32(&sl.devmode) == 1)
 	buf += fmt.Sprintf("No such host: %t\n", sl.errNoSuchHost == nil)
 	buf += fmt.Sprintf("No such file: %t\n", sl.errNoSuchFile == nil)
