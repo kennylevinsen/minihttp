@@ -6,6 +6,7 @@ minihttp is a small webserver written in go. It features:
 * Vhosts (hostname and scheme) based on directory structure, not configuration.
 * Serve entirely from memory, with a per-hostname from-disk directory for big files.
 * GZIP without latency for from-memory files.
+* Deduplication of in-memory files.
 * Cache headers (last-modified, etag, expiry), with per-site, per-file extension configuration.
 * Development mode that reloads all files on every request.
 * Command server that allows toggling development mode, as well as triggering reloads, which also add/remove vhosts and reloads their configuration.
