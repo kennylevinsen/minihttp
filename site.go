@@ -210,10 +210,10 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 		s                  *site
 		res                *resource
 		body               []byte
+		rmap               map[string]*resource
 	)
 
-	host, _, err = net.SplitHostPort(url.Host)
-	if err != nil {
+	if host, _, err = net.SplitHostPort(url.Host); err != nil {
 		host = url.Host
 	}
 
@@ -235,15 +235,6 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 		return sl.defErrNoSuchHost, 500
 	}
 
-	// Select the site based on the schema.
-	var rmap map[string]*resource
-	switch url.Scheme {
-	case "https":
-		rmap = s.http
-	default:
-		rmap = s.https
-	}
-
 	p = path.Clean(url.Path)
 
 	// Check if we need to serve directly from disk. We verify if the fancypath
@@ -254,8 +245,7 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	fancypath = s.config.General.FancyFolder
 	if fancypath != "" && len(p) > len(fancypath) && p[:len(fancypath)] == fancypath {
 		p = path.Join(sl.root, host, "fancy", p)
-		body, err = ioutil.ReadFile(p)
-		if err != nil {
+		if body, err = ioutil.ReadFile(p); err != nil {
 			log.Printf("Error trying to read file \"%s\" from disk: %v", p, err)
 			goto filenotfound
 		}
@@ -267,6 +257,14 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 		}
 		res.update()
 		return res, 200
+	}
+
+	// Select the site based on the schema.
+	switch url.Scheme {
+	case "https":
+		rmap = s.http
+	default:
+		rmap = s.https
 	}
 
 	s.RLock()
