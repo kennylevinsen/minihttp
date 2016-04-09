@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	configFile  = flag.String("config", "/etc/simplehttp/config.toml", "the config file to use")
+	configFile  = flag.String("config", "config.toml", "the config file to use")
 	rootdir     = flag.String("rootdir", "", "the dir to serve from (overwrites config)")
 	address     = flag.String("address", "", "address to listen on (overwrites config)")
 	tlsAddress  = flag.String("tlsAddress", "", "address to listen on for TLS (overwrites config)")
