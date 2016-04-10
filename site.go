@@ -348,7 +348,7 @@ filenotfound:
 
 // load reads a root server structure in the format:
 //
-//		example.com/scheme/index.html
+//      example.com/scheme/index.html
 //      example.com/config.toml
 //
 // The initial part of the path is the domain name, used for vhost purposes. The

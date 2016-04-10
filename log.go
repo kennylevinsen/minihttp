@@ -6,18 +6,27 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sync"
 )
 
 type rotateWriter struct {
 	fp    *os.File
 	queue chan []byte
+	wg    sync.WaitGroup
 	count int
 
 	MaxLines int
 	Root     string
 }
 
+func (w *rotateWriter) Shutdown() {
+	close(w.queue)
+	w.wg.Wait()
+	w.fp.Close()
+}
+
 func (w *rotateWriter) Serve() error {
+	w.wg.Add(1)
 	for entry := range w.queue {
 		if w.fp == nil || w.count > w.MaxLines {
 			err := w.rotate()
@@ -32,6 +41,7 @@ func (w *rotateWriter) Serve() error {
 			return err
 		}
 	}
+	w.wg.Done()
 
 	return nil
 }

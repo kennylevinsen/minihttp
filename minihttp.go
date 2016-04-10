@@ -11,12 +11,14 @@ import (
 )
 
 var (
-	configFile  = flag.String("config", "config.toml", "the config file to use")
+	configFile  = flag.String("config", "minihttp.toml", "the config file to use")
 	rootdir     = flag.String("rootdir", "", "the dir to serve from (overwrites config)")
 	address     = flag.String("address", "", "address to listen on (overwrites config)")
 	tlsAddress  = flag.String("tlsAddress", "", "address to listen on for TLS (overwrites config)")
 	tlsCert     = flag.String("tlsCert", "", "certificate for TLS (overwrites config)")
 	tlsKey      = flag.String("tlsKey", "", "key for TLS (overwrites config)")
+	logFile     = flag.String("logFile", "", "file to use for logging (overwites config)")
+	command     = flag.String("command", "", "address to use for command server (overwrites config)")
 	development = flag.Bool("dev", false, "reload on every request (if no config set)")
 )
 
@@ -48,12 +50,20 @@ func main() {
 	if *tlsKey != "" {
 		conf.HTTPS.Key = *tlsKey
 	}
+	if *logFile != "" {
+		conf.LogFile = *logFile
+	}
+	if *command != "" {
+		conf.Command.Address = *command
+	}
 	if *development != false {
 		conf.Development = *development
 	}
 
 	if conf.LogFile != "" {
 		rw := newRotateWriter(conf.LogFile, conf.LogLines)
+		defer rw.Shutdown()
+
 		go func() {
 			fmt.Fprintf(os.Stderr, "RotateWriter terminated: %v\n", rw.Serve())
 		}()
@@ -105,13 +115,14 @@ func main() {
 
 	if conf.Command.Address != "" {
 		go func() {
+			log.Printf("Starting command server at: %s", conf.Command.Address)
 			s := &http.Server{
 				Addr:         conf.Command.Address,
 				Handler:      http.HandlerFunc(sl.cmdhttp),
 				ReadTimeout:  10 * time.Second,
 				WriteTimeout: 10 * time.Second,
 			}
-			log.Fatal(s.ListenAndServe())
+			log.Printf("Command server failure: %v", s.ListenAndServe())
 		}()
 	}
 
@@ -119,13 +130,14 @@ func main() {
 	if conf.HTTP.Address != "" {
 		wg.Add(1)
 		go func() {
+			log.Printf("Starting HTTP server at: %s", conf.HTTP.Address)
 			s := &http.Server{
 				Addr:         conf.HTTP.Address,
 				Handler:      http.HandlerFunc(sl.http),
 				ReadTimeout:  30 * time.Second,
 				WriteTimeout: 10 * time.Minute,
 			}
-			log.Fatal(s.ListenAndServe())
+			log.Printf("HTTP server failure: %v", s.ListenAndServe())
 			wg.Done()
 		}()
 	}
@@ -133,6 +145,7 @@ func main() {
 	if conf.HTTPS.Address != "" {
 		wg.Add(1)
 		go func() {
+			log.Printf("Starting HTTPS server at: %s", conf.HTTPS.Address)
 			s := &http.Server{
 				Addr:         conf.HTTPS.Address,
 				Handler:      http.HandlerFunc(sl.http),
@@ -140,10 +153,11 @@ func main() {
 				WriteTimeout: 10 * time.Minute,
 			}
 
-			log.Fatal(s.ListenAndServeTLS(conf.HTTPS.Cert, conf.HTTPS.Key))
+			log.Printf("HTTPS server failure: %v", s.ListenAndServeTLS(conf.HTTPS.Cert, conf.HTTPS.Key))
 			wg.Done()
 		}()
 	}
 
+	log.Printf("Terminating")
 	wg.Wait()
 }
