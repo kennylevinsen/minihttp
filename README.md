@@ -2,18 +2,20 @@
 
 minihttp is a small webserver written in go. It features:
 
-* Sane defaults. You can run entirely without a configuration file.
-* Vhosts (hostname and scheme) based on directory structure, not configuration.
-* Serve entirely from memory, with a per-hostname from-disk directory for big files.
-* GZIP without latency for from-memory files.
-* Deduplication of in-memory files.
-* Cache headers (last-modified, etag, expiry), with per-site, per-file extension configuration.
-* Development mode that reloads all files on every request.
-* Command server that allows toggling development mode, as well as triggering reloads, which also add/remove vhosts and reloads their configuration.
-* Access logs with x-forwarded-for and user-agent.
-* Fast stuff.
+* Zero-config vhost.
+* Serve from memory, with server-wide deduplication by hash.
+* Files gzipped ahead of time for zero-delay compressed responses.
+* Sane cache-headers by default, or configurable per host per file-extension.
+* Development mode to reload files on every request.
+* Command-server for runtime-reload, status reports, and development mode toggling
+* Decent access logs with primitive X-Forwarded-For handling and user agents.
+* Sane defaults. Ain't nobody got time for config, so two parameters is all it takes ot start (4 for TLS).
+* Per-site from-disk folder for heavy assets or quick filesharing (with independent cache and compression settings).
+* Fast stuffs.
 
 There's no CGI. No per-path configuration. No rewrite rules. If you want something fancier, go see [Caddy](https://caddyserver.com).
+
+The command server thing is totally cool. Added a vhost? Removed one? Changed your site? `curl localhost:7000/reload`. Maybe even `curl localhost:7000/status` to see how much memory you're using post-deduplication on your files, and what vhosts are enabled.
 
 ### How to use
 
@@ -55,6 +57,8 @@ minihttp -rootdir web -address :80
 
 ### Server configuration
 
+Ain't got time for documentation, so here is a configuration file with every option set and a comment:
+
 ```text
 # This is where we will server from.
 root = "/srv/web"
@@ -93,6 +97,8 @@ minihttp -config config.toml
 ```
 
 ### Site configuration
+
+Like above, all options set and comments:
 
 ```text
 [general]
@@ -160,6 +166,8 @@ A 404.html and 500.html can be put in the rootdir ("web/404.html" and "web/500.h
 
 ### Command API
 
+Bah, I'll just show you this too:
+
 ```text
 $ curl localhost:7000/reload
 OK
@@ -176,11 +184,20 @@ No such file: false
 $ curl localhost:7000/prod
 OK
 $ curl localhost:7000/status
-Sites (2):
-    example.com (133 HTTP resources, 133 HTTPS resources)
-    other.com (48 HTTP resources, 48 HTTPS resources)
-Root: web
-Dev mode: false
-No such host: false
-No such file: false
+Sites (5):
+	example.com (125 HTTP resources, 125 HTTPS resources)
+	other.com (133 HTTP resources, 133 HTTPS resources)
+
+Settings:
+	Root: /somewhere/web
+	Dev mode: false
+	No such host: true
+	No such file: true
+
+Stats:
+	Total plain file size: 24950204
+	Total gzip file size   12344953
+	Total files:           225
 ```
+
+(Yes, I typed in some random numbers. If you want real numbers, run it yourself!)
