@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -212,7 +213,9 @@ type sitelist struct {
 	defaulthost string
 
 	// stats
-	filesInMemory int
+	filesInMemory      int
+	plainBytesInMemory int
+	gzipBytesInMemory  int
 }
 
 func (sl *sitelist) status() string {
@@ -233,7 +236,10 @@ func (sl *sitelist) status() string {
 	buf += fmt.Sprintf("\tNo such host: %t\n", sl.errNoSuchHost == nil)
 	buf += fmt.Sprintf("\tNo such file: %t\n", sl.errNoSuchFile == nil)
 	buf += "\nStats:\n"
-	buf += fmt.Sprintf("\tFiles in memory: %d\n", sl.filesInMemory)
+	buf += fmt.Sprintf("\tTotal plain file size: %dB\n", sl.plainBytesInMemory)
+	buf += fmt.Sprintf("\tTotal gzip file size   %dB\n", sl.gzipBytesInMemory)
+	buf += fmt.Sprintf("\tTotal files:           %d\n", sl.filesInMemory)
+	buf += fmt.Sprintf("")
 
 	return buf
 }
@@ -457,13 +463,24 @@ func (sl *sitelist) load() error {
 		}
 	}
 
+	var plainInMemory, gzipInMemory int
+	for _, v := range cachemap {
+		plainInMemory += len(v.plain)
+		gzipInMemory += len(v.gzip)
+	}
+
 	// We're done, so install the results.
 	sl.siteLock.Lock()
-	sl.filesInMemory = len(cachemap)
 	sl.sites = sites
 	sl.errNoSuchFile = errNoSuchFile
 	sl.errNoSuchHost = errNoSuchHost
+	sl.filesInMemory = len(cachemap)
+	sl.plainBytesInMemory = plainInMemory
+	sl.gzipBytesInMemory = gzipInMemory
 	sl.siteLock.Unlock()
+
+	// We might have created a lot of garbage, so just run the GC now.
+	runtime.GC()
 
 	return nil
 }

@@ -12,13 +12,13 @@ import (
 
 var (
 	configFile  = flag.String("config", "minihttp.toml", "the config file to use")
-	rootdir     = flag.String("rootdir", "", "the dir to serve from (overwrites config)")
-	address     = flag.String("address", "", "address to listen on (overwrites config)")
-	tlsAddress  = flag.String("tlsAddress", "", "address to listen on for TLS (overwrites config)")
-	tlsCert     = flag.String("tlsCert", "", "certificate for TLS (overwrites config)")
-	tlsKey      = flag.String("tlsKey", "", "key for TLS (overwrites config)")
+	rootdir     = flag.String("rootdir", "", "the dir to serve from")
+	address     = flag.String("address", "", "address to listen on")
+	tlsAddress  = flag.String("tlsAddress", "", "address to listen on for TLS")
+	tlsCert     = flag.String("tlsCert", "", "certificate for TLS")
+	tlsKey      = flag.String("tlsKey", "", "key for TLS")
 	logFile     = flag.String("logFile", "", "file to use for logging (overwites config)")
-	command     = flag.String("command", "", "address to use for command server (overwrites config)")
+	command     = flag.String("command", "", "address to use for command server")
 	development = flag.Bool("dev", false, "reload on every request (if no config set)")
 )
 
@@ -56,7 +56,7 @@ func main() {
 	if *command != "" {
 		conf.Command.Address = *command
 	}
-	if *development != false {
+	if *development {
 		conf.Development = *development
 	}
 
@@ -158,6 +158,6 @@ func main() {
 		}()
 	}
 
-	log.Printf("Terminating")
 	wg.Wait()
+	log.Printf("Terminating")
 }
