@@ -126,14 +126,14 @@ Like above, all options set and comments:
 
 # Specific cache times. The syntax is that which time.ParseDuration accepts.
 [cache.cacheTimes]
-    ".woff": "90d"
-    ".woff2": "90d"
-    ".ttf": "90d"
-    ".eot": "90d"
-    ".otf": "90d"
-    ".jpg": "90d"
-    ".png": "90d"
-    ".css": "7d"
+    ".woff" ="90d"
+    ".woff2" = "90d"
+    ".ttf" = "90d"
+    ".eot" = "90d"
+    ".otf" = "90d"
+    ".jpg" = "90d"
+    ".png" = "90d"
+    ".css" = "7d"
 
 [compression]
     # This disables GZIP compression for memory content.
