@@ -290,29 +290,8 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 
 	p = path.Clean(url.Path)
 
-	// Check if we need to serve directly from disk. We verify if the fancypath
-	// path prefix matches, and if so, try to load a resource directly, without
-	// storing it in the resource map. The resource is loaded from the "fancy"
-	// folder of the vhost directory. If the file cannot be read for any reason,
-	// we will skip to the 404 handling.
-	fancypath = s.config.General.FancyFolder
-	if fancypath != "" && len(p) > len(fancypath) && p[:len(fancypath)] == fancypath {
-		p = path.Join(sl.root, host, "fancy", p)
-		if body, err = ioutil.ReadFile(p); err != nil {
-			log.Printf("Error trying to read file \"%s\" from disk: %v", p, err)
-			goto filenotfound
-		}
-		res = &resource{
-			path:     p,
-			body:     body,
-			config:   s.config,
-			fromDisk: true,
-		}
-		res.updateAll()
-		return res, 200
-	}
-
-	// Select the site based on the schema.
+	// First, let's try for the file in memory. If it's found, we return it
+	// immediately. This is the path we want to be the fastest.
 	switch url.Scheme {
 	case "https":
 		rmap = s.https
@@ -328,7 +307,29 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 		return res, 200
 	}
 
-filenotfound:
+	// The file was not in memory, so see if it's available in the from-disk
+	// folder. We first verify if the path prefix matches the permitted
+	// from-disk prefix, and if so, try to load the resource directly, without
+	// storing it in the resource map. The source is loaded from the "fancy"
+	// folder of the vhost directory.
+	fancypath = s.config.General.FancyFolder
+	if strings.HasPrefix(p, fancypath) {
+		// TODO(kl): Should we keep the fancypath prefix thing? It means that
+		// not every 404 triggers additional syscalls, and therefore speeds the
+		// normal 404 path up a bit, but it also adds complexity.
+		p = path.Join(sl.root, host, "fancy", p)
+		if body, err = ioutil.ReadFile(p); err == nil {
+			res = &resource{
+				path:     p,
+				body:     body,
+				config:   s.config,
+				fromDisk: true,
+			}
+			res.updateAll()
+			return res, 200
+		}
+	}
+
 	// 404 File Not Found time! We try to fetch a 404.html document from the
 	// site. The 404 document is served from 3 locations, as available:
 	//
