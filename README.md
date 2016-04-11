@@ -47,7 +47,7 @@ $ curl http://localhost:8080
 Hello from HTTP
 ```
 
-And that's it!
+And that's it! If you want another vhost, just make another folder like the web one. You can either restart the server or use the command API to reload it (see the bottom of the README). If you want to run the server permanently, I suggest making a server configuration file, but that's up to you.
 
 If you want to run on port 80 on a Linux box, I would highly recommend setting the appropriate capabilities, rather than running the server as root:
 ```text
@@ -169,20 +169,36 @@ A 404.html and 500.html can be put in the rootdir ("web/404.html" and "web/500.h
 Bah, I'll just show you this too:
 
 ```text
+$ # Reload vhosts, their configurations and files.
 $ curl localhost:7000/reload
 OK
+
+$ # Enable development mode.
 $ curl localhost:7000/devel
 OK
+
+$ # Check the server status.
 $ curl localhost:7000/status
-Sites (2):
-    example.com (133 HTTP resources, 133 HTTPS resources)
-    other.com (48 HTTP resources, 48 HTTPS resources)
-Root: web
-Dev mode: true
-No such host: false
-No such file: false
+Sites (5):
+	example.com (125 HTTP resources, 125 HTTPS resources)
+	other.com (133 HTTP resources, 133 HTTPS resources)
+
+Settings:
+	Root: /somewhere/web
+	Dev mode: true
+	No such host: true
+	No such file: true
+
+Stats:
+	Total plain file size: 24950204
+	Total gzip file size   12344953
+	Total files:           225
+
+$ # Disable development mode (production mode).
 $ curl localhost:7000/prod
 OK
+
+$ # Check status to see the change.
 $ curl localhost:7000/status
 Sites (5):
 	example.com (125 HTTP resources, 125 HTTPS resources)
