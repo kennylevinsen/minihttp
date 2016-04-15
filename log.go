@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"sync"
@@ -64,8 +65,14 @@ func (w *rotateWriter) rotate() error {
 		}
 	}
 
+	var p string
 	for i := 9; i > 0; i-- {
-		os.Rename(fmt.Sprintf("%s.%d.gz", w.Root, i), fmt.Sprintf("%s.%d.gz", w.Root, i+1))
+		p = fmt.Sprintf("%s.%d.gz", w.Root, i)
+		if _, err = os.Stat(p); err != nil {
+			// We start in the high end, so we might get a few errors before we reach the first "real" log.
+			continue
+		}
+		os.Rename(p, fmt.Sprintf("%s.%d.gz", w.Root, i+1))
 	}
 
 	b, _ := ioutil.ReadFile(w.Root)
@@ -81,10 +88,52 @@ func (w *rotateWriter) rotate() error {
 	return err
 }
 
-func newRotateWriter(name string, maxlines int) *rotateWriter {
-	return &rotateWriter{
+func newRotateWriter(name string, maxlines int) (*rotateWriter, error) {
+	r := &rotateWriter{
 		queue:    make(chan []byte, 1024),
 		Root:     name,
 		MaxLines: maxlines,
 	}
+
+	var err error
+	if r.fp, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666); err != nil {
+		r.fp = nil
+		return r, r.rotate()
+	}
+
+	// Let's check if the file already present is small enough to continue where
+	// we left off.
+	var (
+		n, i, lc int
+		b        = make([]byte, 16*1024)
+	)
+
+	for {
+		if n, err = r.fp.Read(b); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		for i = 0; i < n; i++ {
+			if b[i] == '\n' {
+				lc++
+			}
+		}
+	}
+
+	if lc >= maxlines {
+		r.fp.Close()
+		r.fp = nil
+		return r, r.rotate()
+	}
+
+	if _, err := r.fp.Write([]byte("\n")); err != nil {
+		r.fp.Close()
+		r.fp = nil
+		return r, err
+	}
+
+	return r, nil
 }
