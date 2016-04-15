@@ -286,6 +286,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 			useGZIP = true
 			body = r.gzip
 			hash = r.ghash
+			h["Content-Encoding"] = []string{"gzip"}
 		}
 	}
 
@@ -323,11 +324,10 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	w.WriteHeader(status)
-	access(req, status)
-
-	// Are we dealing with a streaming resourec (That is, a file)?
+	// Are we dealing with a streaming resource (That is, a file)?
 	if r.bodyReadCloser != nil {
+		w.WriteHeader(status)
+		access(req, status)
 		if head {
 			return
 		}
@@ -347,6 +347,9 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	}
 
 	h["Content-Length"] = []string{fmt.Sprintf("%d", len(body))}
+
+	w.WriteHeader(status)
+	access(req, status)
 
 	// HEAD?
 	if head {
