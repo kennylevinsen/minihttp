@@ -56,7 +56,6 @@ type SiteConfigCompression struct {
 	NoCompressFromMem  bool
 	NoCompressFromDisk bool
 	MinSize            int
-	MinRatio           float64
 	Blacklist          []string
 }
 
@@ -99,8 +98,7 @@ var (
 				".gz",
 				".tgz",
 			},
-			MinSize:  256,
-			MinRatio: 1.1,
+			MinSize: 256,
 		},
 	}
 	DefaultConfig = Config{

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ var (
 	logFile     = flag.String("logFile", "", "file to use for logging (overwites config)")
 	command     = flag.String("command", "", "address to use for command server")
 	development = flag.Bool("dev", false, "reload on every request (if no config set)")
+	quiet       = flag.Bool("quiet", false, "disable logging")
 )
 
 func main() {
@@ -60,8 +62,14 @@ func main() {
 		conf.Development = *development
 	}
 
-	if conf.LogFile != "" {
-		rw := newRotateWriter(conf.LogFile, conf.LogLines)
+	if *quiet {
+		log.SetOutput(ioutil.Discard)
+	} else if conf.LogFile != "" {
+		rw, err := newRotateWriter(conf.LogFile, conf.LogLines)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not initialize RotateWriter: %v\n", err)
+			return
+		}
 		defer rw.Shutdown()
 
 		go func() {
@@ -91,20 +99,7 @@ func main() {
 	sl := &sitelist{
 		root:        conf.Root,
 		defaulthost: conf.DefaultHost,
-		defErrNoSuchHost: &resource{
-			body:    []byte("no such service"),
-			cnttype: "text/plain",
-			config:  &DefaultSiteConfig,
-		},
-		defErrNoSuchFile: &resource{
-			body:    []byte("no such file"),
-			cnttype: "text/plain",
-			config:  &DefaultSiteConfig,
-		},
 	}
-
-	sl.defErrNoSuchFile.updateAll()
-	sl.defErrNoSuchHost.updateAll()
 
 	if err = sl.load(); err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to walk files: %v\n", err)
