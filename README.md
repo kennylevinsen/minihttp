@@ -36,10 +36,9 @@ echo "Shared file" > web/example.com/common/shared.html
 
 3. Start minihttp:
 ```text
+# TLS can be enabled with -tlsAddress, -tlsCert and -tlsKey
 minihttp -rootdir web -address :8080
 ```
-
-(TLS can be enabled with -tlsAddress, -tlsCert and -tlsKey)
 
 4. Try things out:
 ```text
@@ -63,7 +62,7 @@ Ain't got time for documentation, so here is a configuration file with every opt
 # This is where we will server from.
 root = "/srv/web"
 
-# This is the host that will be used if the request does not provide a Host
+# This is the host that will be used if the requested one is not found.
 # header.
 defaultHost = "example.com"
 
