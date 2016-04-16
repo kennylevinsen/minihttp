@@ -10,25 +10,43 @@ import (
 	"sync"
 )
 
-type rotateWriter struct {
+// RotateWriter is a io.Writer that can be used for logging with rotation. It
+// keeps 1 current logfile and 9 gzipped old logfiles. Rotation occurs when a
+// line limit is reached. A RotateWriter *must* be created through
+// NewRotateWriter.
+type RotateWriter struct {
 	fp    *os.File
-	queue chan []byte
 	wg    sync.WaitGroup
 	count int
 
+	// Queue is the internal logging channel. This channel should buffered. If
+	// not set, a call to Write will panic.
+	Queue chan []byte
+
+	// MaxLines is the maximum amount of lines to have an a file. When a file
+	// exceeds this limit, it will be rotated.
 	MaxLines int
-	Root     string
+
+	// Filename is the name of the first file. Additional files will be named
+	// Filename.N.gz, where 0<N<=10.
+	Filename string
 }
 
-func (w *rotateWriter) Shutdown() {
-	close(w.queue)
+// Shutdown ensures that the file will be closed properly, after having flushed
+// all pending lines.
+func (w *RotateWriter) Shutdown() {
+	close(w.Queue)
 	w.wg.Wait()
 	w.fp.Close()
 }
 
-func (w *rotateWriter) Serve() error {
+// Serve executes the run-loop RotateWriter requires to operate.
+func (w *RotateWriter) Serve() error {
+	if w.Queue == nil {
+		return fmt.Errorf("no queue set")
+	}
 	w.wg.Add(1)
-	for entry := range w.queue {
+	for entry := range w.Queue {
 		if w.fp == nil || w.count > w.MaxLines {
 			err := w.rotate()
 			if err != nil {
@@ -48,12 +66,61 @@ func (w *rotateWriter) Serve() error {
 }
 
 // Write satisfies the io.Writer interface.
-func (w *rotateWriter) Write(output []byte) (int, error) {
-	w.queue <- output
+func (w *RotateWriter) Write(output []byte) (int, error) {
+	w.Queue <- output
 	return len(output), nil
 }
 
-func (w *rotateWriter) rotate() error {
+// prepare checks if a file can be reused. If not, it will be rotated
+// immediately.
+func (w *RotateWriter) prepare() error {
+	var err error
+	if w.fp, err = os.OpenFile(w.Filename, os.O_RDWR|os.O_CREATE, 0666); err != nil {
+		w.fp = nil
+		return w.rotate()
+	}
+
+	// Let's check if the file already present is small enough to continue where
+	// we left off.
+	var (
+		n, i, lc int
+		b        = make([]byte, 16*1024)
+	)
+
+	// Count the lines.
+	for {
+		if n, err = w.fp.Read(b); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		for i = 0; i < n; i++ {
+			if b[i] == '\n' {
+				lc++
+			}
+		}
+	}
+
+	// Reuse?
+	if lc >= w.MaxLines {
+		w.fp.Close()
+		w.fp = nil
+		return w.rotate()
+	}
+
+	if _, err := w.fp.Write([]byte("\n")); err != nil {
+		w.fp.Close()
+		w.fp = nil
+		return err
+	}
+
+	return nil
+}
+
+// rotate shuffles the files around and performs GZIP'ing.
+func (w *RotateWriter) rotate() error {
 	var err error
 
 	// Close existing file if open
@@ -67,73 +134,35 @@ func (w *rotateWriter) rotate() error {
 
 	var p string
 	for i := 9; i > 0; i-- {
-		p = fmt.Sprintf("%s.%d.gz", w.Root, i)
+		p = fmt.Sprintf("%s.%d.gz", w.Filename, i)
 		if _, err = os.Stat(p); err != nil {
 			// We start in the high end, so we might get a few errors before we reach the first "real" log.
 			continue
 		}
-		os.Rename(p, fmt.Sprintf("%s.%d.gz", w.Root, i+1))
+		os.Rename(p, fmt.Sprintf("%s.%d.gz", w.Filename, i+1))
 	}
 
-	b, _ := ioutil.ReadFile(w.Root)
+	// GZIP the newest file.
+	b, _ := ioutil.ReadFile(w.Filename)
 	buf := new(bytes.Buffer)
 	c := gzip.NewWriter(buf)
 	c.Write(b)
 	c.Close()
-	ioutil.WriteFile(fmt.Sprintf("%s.1.gz", w.Root), buf.Bytes(), 0666)
+	ioutil.WriteFile(fmt.Sprintf("%s.1.gz", w.Filename), buf.Bytes(), 0666)
 
 	// Create a file.
-	w.fp, err = os.Create(w.Root)
+	w.fp, err = os.Create(w.Filename)
 	w.count = 0
 	return err
 }
 
-func newRotateWriter(name string, maxlines int) (*rotateWriter, error) {
-	r := &rotateWriter{
-		queue:    make(chan []byte, 1024),
-		Root:     name,
+// NewRotateWriter returns a fully initialized RotateWriter.
+func NewRotateWriter(name string, maxlines int) (*RotateWriter, error) {
+	w := &RotateWriter{
+		Queue:    make(chan []byte, 1024),
+		Filename: name,
 		MaxLines: maxlines,
 	}
 
-	var err error
-	if r.fp, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666); err != nil {
-		r.fp = nil
-		return r, r.rotate()
-	}
-
-	// Let's check if the file already present is small enough to continue where
-	// we left off.
-	var (
-		n, i, lc int
-		b        = make([]byte, 16*1024)
-	)
-
-	for {
-		if n, err = r.fp.Read(b); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		for i = 0; i < n; i++ {
-			if b[i] == '\n' {
-				lc++
-			}
-		}
-	}
-
-	if lc >= maxlines {
-		r.fp.Close()
-		r.fp = nil
-		return r, r.rotate()
-	}
-
-	if _, err := r.fp.Write([]byte("\n")); err != nil {
-		r.fp.Close()
-		r.fp = nil
-		return r, err
-	}
-
-	return r, nil
+	return w, w.prepare()
 }

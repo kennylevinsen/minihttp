@@ -37,6 +37,7 @@ func main() {
 		log.Printf("Cannot read configuration for server, using default: %v", err)
 	}
 
+	// Apply command-line arguments over the provided configuration
 	if *rootdir != "" {
 		conf.Root = *rootdir
 	}
@@ -65,7 +66,7 @@ func main() {
 	if *quiet {
 		log.SetOutput(ioutil.Discard)
 	} else if conf.LogFile != "" {
-		rw, err := newRotateWriter(conf.LogFile, conf.LogLines)
+		rw, err := NewRotateWriter(conf.LogFile, conf.LogLines)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Could not initialize RotateWriter: %v\n", err)
 			return
@@ -96,6 +97,7 @@ func main() {
 		return
 	}
 
+	// Load sitelist
 	sl := &sitelist{
 		root:        conf.Root,
 		defaulthost: conf.DefaultHost,
@@ -108,6 +110,7 @@ func main() {
 
 	sl.dev(*development)
 
+	// Start your engines!
 	if conf.Command.Address != "" {
 		go func() {
 			log.Printf("Starting command server at: %s", conf.Command.Address)
