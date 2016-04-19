@@ -164,6 +164,9 @@ func (s *site) addResource(diskpath, sitepath string, cachemap map[string]*cache
 		gz.Close()
 		r.gzip = buf.Bytes()
 
+		h = sha256.Sum256(r.gzip)
+		r.ghash = hex.EncodeToString(h[:])
+
 		cachemap[r.hash] = &cache{
 			plain: r.body,
 			gzip:  r.gzip,
