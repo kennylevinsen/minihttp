@@ -14,45 +14,75 @@ import (
 	"time"
 )
 
-type resource struct {
-	body           []byte
-	gzip           []byte
-	bodyReadCloser io.ReadCloser
-	permitGZIP     bool
+const (
+	cacheControlNoCache = "public, max-age=0, no-cache"
+	cacheControlCache   = "public, max-age=%.0f"
+)
 
-	loaded  time.Time
-	cnttype string
-	cache   string
+func gz(b []byte) []byte {
+	buf := new(bytes.Buffer)
+	gz, _ := gzip.NewWriterLevel(buf, gzip.BestCompression)
+	gz.Write(b)
+	gz.Close()
+	return buf.Bytes()
+}
 
-	// I don't like people. They claim that entity tags should be different on
-	// different content-encodings. The spec states that the tag is for an
-	// "entity variant", but does not specify an entity variant in further
-	// detail. Why do I need to distinguish between encodings that have no
-	// effect on the content? The idea is that the browser can tell me that it
-	// has a certain resource, and it is curious if this resource is still
-	// relevant. Why would I care if it previously downloaded it in plain or
-	// gzipped variant? It's an encoding, it does not affect the content at all.
-	// I hate you, internet.
+func hash(b []byte) string {
+	// You can't address into the return value of Sum256 without putting it into
+	// a variable first... GRR!
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// cache stores bodies and hashes for deduplication during sitelist reload.
+type cache struct {
+	body  []byte
+	gbody []byte
 	hash  string
 	ghash string
+}
 
-	path     string
-	fromDisk bool
-	config   *SiteConfig
+type resource struct {
+	path           string
+	body           []byte
+	gbody          []byte
+	bodyReadCloser io.ReadCloser
+
+	permitGZIP bool
+	fromDisk   bool
+	cache      string
+	cnttype    string
+	loaded     time.Time
+	config     *SiteConfig
+
+	// I don't like people. For some stupid reason, HTTP has two defined ways to
+	// signal that the requested content has been transformed in some manner:
+	// Content-Encoding and Transfer-Encoding. The difference between them is
+	// that Content-Encoding is a "property of the content", whereas
+	// Transfer-Encoding is a "property of the message". Now, the question for a
+	// million dollars: If you ask for a resource, and state that you permit for
+	// it to be gzipped, is that because you really want the gzipped entity, or
+	// is it because you'd like the content you asked for, but wouldn't mind
+	// having the traffic encoded to save bytes? Obviously, an encoding applied
+	// before transferring an entity over HTTP is intended to be a property of
+	// the transport, not a property of the content. Destinguishing between them
+	// makes no sense. Either a client supports and wants gzip, or it doesn't,
+	// but the content the client is never specifically interested in content
+	// that had a certain server-side transformation applied to it.
+	//
+	// Now, this would all be fine if anyone implemented the full damn spec and
+	// supported Transfer-Encoding: gzip. But noooo, that's no fun, so
+	// Content-Encoding is the only way, and as a result, I have to deliver two
+	// different hashes depending on whether the content is gzipped or not,
+	// because Content-Encoding defines "entity variants". I hate you, internet.
+	hash  string
+	ghash string
 }
 
 func (r *resource) updateTagCompress() {
-	buf := new(bytes.Buffer)
-	gz := gzip.NewWriter(buf)
-	gz.Write(r.body)
-	gz.Close()
-	r.gzip = buf.Bytes()
-
-	h := sha256.Sum256(r.body)
-	r.hash = hex.EncodeToString(h[:])
-	h = sha256.Sum256(r.gzip)
-	r.ghash = hex.EncodeToString(h[:])
-
+	r.hash = hash(r.body)
+	r.gbody = gz(r.body)
+	r.ghash = hash(r.gbody)
 	r.update()
 }
 
@@ -65,7 +95,10 @@ func (r *resource) update() {
 		mincompsize  = compressconf.MinSize
 	)
 
-	r.cnttype = mime.TypeByExtension(ext)
+	if r.cnttype = mime.TypeByExtension(ext); r.cnttype == "" {
+		// Meh.
+		r.cnttype = "text/plain; charset=utf-8"
+	}
 
 	if compressconf.MinSize == 0 {
 		mincompsize = DefaultSiteConfig.Compression.MinSize
@@ -83,9 +116,9 @@ func (r *resource) update() {
 	}
 
 	if cache == 0 {
-		r.cache = "public, max-age=0, no-cache"
+		r.cache = cacheControlNoCache
 	} else {
-		r.cache = fmt.Sprintf("public, max-age=%.0f", cache.Seconds())
+		r.cache = fmt.Sprintf(cacheControlCache, cache.Seconds())
 	}
 
 	// Evaluate compression.
@@ -101,22 +134,26 @@ func (r *resource) update() {
 		}
 	}
 
-	if r.gzip != nil && float64(len(r.gzip))*1.1 >= float64(len(r.body)) {
-		// Clear gzip.
-		r.gzip = nil
+	// If we know the size of the gzipped content already, we can evaluate if
+	// the gzip variant is worth the effort. If I math'd this right, then the
+	// threshold is a 10% size improvement. One could argue that ANY network
+	// benefit is worth persuing, but if the benefit is less than 10%, the
+	// network benefit is negligible, and the server is basically just holding
+	// the file in memory twice.
+	if r.gbody != nil && float64(len(r.gbody))*1.1 >= float64(len(r.body)) {
+		// Clear gbody. In case no resources decide to store the gzipped entity
+		// variant, this allows for it to be garbage collected.
+		r.gbody = nil
 		return
 	}
 
 	r.permitGZIP = true
 }
 
-type cache struct {
-	plain []byte
-	gzip  []byte
-	hash  string
-	ghash string
-}
-
+// site represents two sets of resources (one for HTTP, one for HTTPS) and a
+// related configuration. A site and its resource sets must not be mutated once
+// added to a sitelist, as access to them is intentionally not locked. Reloading
+// a must happen by replacing the site under sitelists' siteLock.
 type site struct {
 	http   map[string]*resource
 	https  map[string]*resource
@@ -141,39 +178,32 @@ func (s *site) addResource(diskpath, sitepath string, cachemap map[string]*cache
 		}
 	}
 
+	body, err := ioutil.ReadFile(diskpath)
+	if err != nil {
+		return err
+	}
+
 	r := &resource{
+		body:   body,
+		hash:   hash(body),
 		path:   diskpath,
 		config: s.config,
 		loaded: fi.ModTime(),
 	}
 
-	r.body, err = ioutil.ReadFile(r.path)
-	if err != nil {
-		return err
-	}
-
-	h := sha256.Sum256(r.body)
-	r.hash = hex.EncodeToString(h[:])
-
 	// Check if we already have this content read so we can deduplicate it.
 	if cached, exists := cachemap[r.hash]; exists {
-		r.body = cached.plain
-		r.gzip = cached.gzip
+		r.body = cached.body
 		r.hash = cached.hash
+		r.gbody = cached.gbody
 		r.ghash = cached.ghash
 	} else {
-		buf := new(bytes.Buffer)
-		gz := gzip.NewWriter(buf)
-		gz.Write(r.body)
-		gz.Close()
-		r.gzip = buf.Bytes()
-
-		h = sha256.Sum256(r.gzip)
-		r.ghash = hex.EncodeToString(h[:])
+		r.gbody = gz(r.body)
+		r.ghash = hash(r.gbody)
 
 		cachemap[r.hash] = &cache{
-			plain: r.body,
-			gzip:  r.gzip,
+			body:  r.body,
+			gbody: r.gbody,
 			hash:  r.hash,
 			ghash: r.ghash,
 		}

@@ -139,12 +139,12 @@ func (sl *sitelist) dev(active bool) {
 // it must stay simple and fast.
 func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	var (
-		host, p, fancypath string
-		err                error
-		exists             bool
-		s                  *site
-		res                *resource
-		rmap               map[string]*resource
+		host, p string
+		err     error
+		exists  bool
+		s       *site
+		res     *resource
+		rmap    map[string]*resource
 	)
 
 	if host, _, err = net.SplitHostPort(url.Host); err != nil {
@@ -198,8 +198,7 @@ func (sl *sitelist) fetch(url *url.URL) (*resource, int) {
 	// from-disk prefix, and if so, try to load the resource directly, without
 	// storing it in the resource map. The source is loaded from the "fancy"
 	// folder of the vhost directory.
-	fancypath = s.config.General.FancyFolder
-	if strings.HasPrefix(p, fancypath) {
+	if strings.HasPrefix(p, s.config.General.FancyFolder) {
 		p = path.Join(sl.root, host, "fancy", p)
 
 		// We make a streaming resource. The beefit of this is a much lower
@@ -284,21 +283,19 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		var acceptEncoding string
 		if acceptEncoding, exists = quickHeaderGet("Accept-Encoding", req.Header); exists && strings.Contains(acceptEncoding, "gzip") {
 			useGZIP = true
-			body = r.gzip
+			body = r.gbody
 			hash = r.ghash
 			h["Content-Encoding"] = []string{"gzip"}
 		}
 	}
 
 	// Set headers
-	if r.cnttype != "" {
-		h["Content-Type"] = []string{r.cnttype}
-	}
+	h["Content-Type"] = []string{r.cnttype}
 	h["Date"] = []string{now.Format(time.RFC1123)}
-	h["Last-Modified"] = []string{r.loaded.Format(time.RFC1123)}
 	h["Cache-Control"] = []string{r.cache}
-	h["Vary"] = []string{"Accept-Encoding"}
+	h["Last-Modified"] = []string{r.loaded.Format(time.RFC1123)}
 	h["Etag"] = []string{hash}
+	h["Vary"] = []string{"Accept-Encoding"}
 
 	// Should we send a 304 Not Modified? We do this if the file was found, and
 	// the cache information headers from the client match the file we have
@@ -332,15 +329,16 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		var ww io.Writer = w
 		if useGZIP {
 			gz, _ := gzip.NewWriterLevel(w, 6)
-			defer gz.Close()
-			ww = gz
-		}
-
-		if _, err = io.Copy(ww, r.bodyReadCloser); err != nil {
-			log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
+			if _, err = io.Copy(gz, r.bodyReadCloser); err != nil {
+				log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
+			}
+			gz.Close()
+		} else {
+			if _, err = io.Copy(w, r.bodyReadCloser); err != nil {
+				log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
+			}
 		}
 		r.bodyReadCloser.Close()
 		return
@@ -512,8 +510,8 @@ func (sl *sitelist) load() error {
 
 	var plainInMemory, gzipInMemory int
 	for _, v := range cachemap {
-		plainInMemory += len(v.plain)
-		gzipInMemory += len(v.gzip)
+		plainInMemory += len(v.body)
+		gzipInMemory += len(v.gbody)
 	}
 
 	// We're done, so install the results.
