@@ -50,8 +50,8 @@ func (r *resource) updateTagCompress() {
 
 	h := sha256.Sum256(r.body)
 	r.hash = hex.EncodeToString(h[:])
-	r.ghash = r.hash + "g"
-	r.hash += "i"
+	h = sha256.Sum256(r.gzip)
+	r.ghash = hex.EncodeToString(h[:])
 
 	r.update()
 }
@@ -113,6 +113,8 @@ func (r *resource) update() {
 type cache struct {
 	plain []byte
 	gzip  []byte
+	hash  string
+	ghash string
 }
 
 type site struct {
@@ -157,6 +159,8 @@ func (s *site) addResource(diskpath, sitepath string, cachemap map[string]*cache
 	if cached, exists := cachemap[r.hash]; exists {
 		r.body = cached.plain
 		r.gzip = cached.gzip
+		r.hash = cached.hash
+		r.ghash = cached.ghash
 	} else {
 		buf := new(bytes.Buffer)
 		gz := gzip.NewWriter(buf)
@@ -170,6 +174,8 @@ func (s *site) addResource(diskpath, sitepath string, cachemap map[string]*cache
 		cachemap[r.hash] = &cache{
 			plain: r.body,
 			gzip:  r.gzip,
+			hash:  r.hash,
+			ghash: r.ghash,
 		}
 	}
 
