@@ -40,7 +40,7 @@ var (
 )
 
 func access(req *http.Request, status int) {
-	var forwardAddr, userAgent string
+	var forwardAddr, userAgent, referer string
 	var exists bool
 	if forwardAddr, exists = quickHeaderGetLast("X-Forwarded-For", req.Header); !exists {
 		forwardAddr = "-"
@@ -48,7 +48,10 @@ func access(req *http.Request, status int) {
 	if userAgent, exists = quickHeaderGet("User-Agent", req.Header); !exists {
 		userAgent = "-"
 	}
-	log.Printf("[%s] (%s): %d \"%s %v %s\" \"%s\"", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, userAgent)
+	if referer, exists = quickHeaderGet("Referer", req.Header); !exists {
+		referer = "-"
+	}
+	log.Printf("[%s (%s)]: %d \"%s %v %s\" \"%s\" \"%s\"", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, referer, userAgent)
 }
 
 // quickHeaderGet bypasses net/textproto/MIMEHeader.CanonicalMIMEHeaderKey,
