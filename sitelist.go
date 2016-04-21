@@ -271,9 +271,9 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	case "HEAD":
 		head = true
 	default:
-		h["Content-Type"] = []string{"text/plain"}
+		h["Content-Type"] = []string{"text/plain; charset=utf-8"}
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		w.Write([]byte("method not allowed"))
+		w.Write(nil) // Do I need to call Write? :/
 		access(req, http.StatusMethodNotAllowed)
 		return
 	}
@@ -333,16 +333,13 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if useGZIP {
-			gz, _ := gzip.NewWriterLevel(w, 6)
-			if _, err = io.Copy(gz, r.bodyReadCloser); err != nil {
-				log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
-			}
+			gz := gzip.NewWriter(w)
+			_, err = io.Copy(gz, r.bodyReadCloser)
 			gz.Close()
 		} else {
-			if _, err = io.Copy(w, r.bodyReadCloser); err != nil {
-				log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
-			}
+			_, err = io.Copy(w, r.bodyReadCloser)
 		}
+		log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
 		r.bodyReadCloser.Close()
 		return
 	}
@@ -381,7 +378,7 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 		log.Printf("[%s]: reloading", req.RemoteAddr)
 		if err := sl.load(); err != nil {
 			log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
 			return
 		}
@@ -393,7 +390,7 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(sl.status()))
 	default:
-		w.WriteHeader(404)
+		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("Unknown command\n"))
 	}
 }
