@@ -374,13 +374,6 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 	case "/prod":
 		log.Printf("[%s]: disabling development mode", req.RemoteAddr)
 		sl.dev(false)
-		log.Printf("[%s]: reloading", req.RemoteAddr)
-		if err := sl.load(); err != nil {
-			log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
-			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
-			return
-		}
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("OK\n"))
