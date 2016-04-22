@@ -63,7 +63,6 @@ Ain't got time for documentation, so here is a configuration file with every opt
 root = "/srv/web"
 
 # This is the host that will be used if the requested one is not found.
-# header.
 defaultHost = "example.com"
 
 # The log/access file.
@@ -178,19 +177,19 @@ OK
 
 $ # Check the server status.
 $ curl localhost:7000/status
-Sites (5):
+Sites (2):
 	example.com (125 HTTP resources, 125 HTTPS resources)
 	other.com (133 HTTP resources, 133 HTTPS resources)
 
 Settings:
 	Root: /somewhere/web
 	Dev mode: true
-	No such host: true
-	No such file: true
+	Global no such host: false
+	Global no such file: false
 
 Stats:
-	Total plain file size: 24950204
-	Total gzip file size   12344953
+	Total plain file size: 23MB
+	Total gzip file size   11MB
 	Total files:           225
 
 $ # Disable development mode (production mode).
@@ -199,19 +198,19 @@ OK
 
 $ # Check status to see the change.
 $ curl localhost:7000/status
-Sites (5):
+Sites (2):
 	example.com (125 HTTP resources, 125 HTTPS resources)
 	other.com (133 HTTP resources, 133 HTTPS resources)
 
 Settings:
 	Root: /somewhere/web
 	Dev mode: false
-	No such host: true
-	No such file: true
+	Global no such host: false
+	Global no such file: false
 
 Stats:
-	Total plain file size: 24950204
-	Total gzip file size   12344953
+	Total plain file size: 23MB
+	Total gzip file size   11MB
 	Total files:           225
 ```
 

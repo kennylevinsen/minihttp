@@ -93,6 +93,18 @@ func (sl *sitelist) access(req *http.Request, status int) {
 	sl.logger("%s %s %d \"%s %v %s\" \"%s\" \"%s\"\n", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, referer, userAgent)
 }
 
+func unitize(thing int) string {
+	if thing > 1024*1024*1024 {
+		return fmt.Sprintf("%.1fGB", float64(thing)/(1024*1024*1024))
+	} else if thing > 1024*1024 {
+		return fmt.Sprintf("%.1fMB", float64(thing)/(1024*1024))
+	} else if thing > 1024 {
+		return fmt.Sprintf("%.1fKB", float64(thing)/1024)
+	}
+
+	return fmt.Sprintf("%dB", thing)
+}
+
 func (sl *sitelist) status() string {
 	sl.siteLock.RLock()
 	defer sl.siteLock.RUnlock()
@@ -105,7 +117,7 @@ func (sl *sitelist) status() string {
 
 	return fmt.Sprintf(`
 Sites: (%d):
-	%s
+%s
 
 Settings:
 	Root:                %s
@@ -114,18 +126,18 @@ Settings:
 	Global no such file: %t
 
 Stats:
-	Total plain file size: %dB
-	Total gzip file size:  %dB
+	Total plain file size: %s
+	Total gzip file size:  %s
 	Total files:           %d
-	`,
+`,
 		len(sl.sites),
 		sites,
 		sl.root,
 		atomic.LoadUint32(&sl.devmode) == 1,
-		sl.errNoSuchHost == nil,
-		sl.errNoSuchFile == nil,
-		sl.plainBytesInMemory,
-		sl.gzipBytesInMemory,
+		sl.errNoSuchHost != nil,
+		sl.errNoSuchFile != nil,
+		unitize(sl.plainBytesInMemory),
+		unitize(sl.gzipBytesInMemory),
 		sl.filesInMemory)
 }
 
