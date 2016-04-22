@@ -8,7 +8,59 @@ import (
 	"io/ioutil"
 	"os"
 	"sync"
+	"time"
 )
+
+func itoa(buf []byte, i int, wid int) {
+	// Assemble decimal in reverse order.
+	bp := len(buf) - 1
+	for i >= 10 || wid > 1 {
+		wid--
+		q := i / 10
+		buf[bp] = byte('0' + i - q*10)
+		bp--
+		i = q
+	}
+	// i < 10
+	buf[bp] = byte('0' + i)
+}
+
+// Logger allows for log package like logging without the overhead on a simple
+// io.Writer
+type Logger struct {
+	Writer io.Writer
+}
+
+// Printf works like log.Printf.
+func (l *Logger) Printf(format string, v ...interface{}) {
+	in := []byte(fmt.Sprintf(format, v...))
+	t := make([]byte, 23+len(in), 23+len(in))
+
+	// Fill in separators
+	t[0] = '['
+	t[5] = '/'
+	t[8] = '/'
+	t[11] = ' '
+	t[14] = ':'
+	t[17] = ':'
+	t[20] = ']'
+	t[21] = ':'
+	t[22] = ' '
+
+	// Fill in values
+	n := time.Now()
+	year, month, day := n.Date()
+	hour, min, sec := n.Clock()
+	itoa(t[1:5], int(year), 4)
+	itoa(t[6:8], int(month), 2)
+	itoa(t[9:11], int(day), 2)
+	itoa(t[12:14], int(hour), 2)
+	itoa(t[15:17], int(min), 2)
+	itoa(t[18:20], int(sec), 2)
+	copy(t[23:], in)
+
+	l.Writer.Write(t)
+}
 
 // RotateWriter is a io.Writer that can be used for logging with rotation. It
 // keeps 1 current logfile and 9 gzipped old logfiles. Rotation occurs when a

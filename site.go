@@ -55,26 +55,6 @@ type resource struct {
 	loaded     time.Time
 	config     *SiteConfig
 
-	// I don't like people. For some stupid reason, HTTP has two defined ways to
-	// signal that the requested content has been transformed in some manner:
-	// Content-Encoding and Transfer-Encoding. The difference between them is
-	// that Content-Encoding is a "property of the content", whereas
-	// Transfer-Encoding is a "property of the message". Now, the question for a
-	// million dollars: If you ask for a resource, and state that you permit for
-	// it to be gzipped, is that because you really want the gzipped entity, or
-	// is it because you'd like the content you asked for, but wouldn't mind
-	// having the traffic encoded to save bytes? Obviously, an encoding applied
-	// before transferring an entity over HTTP is intended to be a property of
-	// the transport, not a property of the content. Destinguishing between them
-	// makes no sense. Either a client supports and wants gzip, or it doesn't,
-	// but the content the client is never specifically interested in content
-	// that had a certain server-side transformation applied to it.
-	//
-	// Now, this would all be fine if anyone implemented the full damn spec and
-	// supported Transfer-Encoding: gzip. But noooo, that's no fun, so
-	// Content-Encoding is the only way, and as a result, I have to deliver two
-	// different hashes depending on whether the content is gzipped or not,
-	// because Content-Encoding defines "entity variants". I hate you, internet.
 	hash  string
 	ghash string
 }

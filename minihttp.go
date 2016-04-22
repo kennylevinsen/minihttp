@@ -3,8 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -31,10 +29,10 @@ func main() {
 	conf, err := readServerConf(*configFile)
 	if err != nil {
 		if conf == nil {
-			log.Printf("Cannot read configuration for server: %v", err)
+			fmt.Printf("Cannot read configuration for server: %v\n", err)
 			return
 		}
-		log.Printf("Cannot read configuration for server, using default: %v", err)
+		fmt.Printf("Cannot read configuration for server, using default: %v\n", err)
 	}
 
 	// Apply command-line arguments over the provided configuration
@@ -63,8 +61,10 @@ func main() {
 		conf.Development = *development
 	}
 
+	var logger func(string, ...interface{}) = (&Logger{Writer: os.Stderr}).Printf
+
 	if *quiet {
-		log.SetOutput(ioutil.Discard)
+		logger = func(string, ...interface{}) {}
 	} else if conf.LogFile != "" {
 		rw, err := NewRotateWriter(conf.LogFile, conf.LogLines)
 		if err != nil {
@@ -76,7 +76,8 @@ func main() {
 		go func() {
 			fmt.Fprintf(os.Stderr, "RotateWriter terminated: %v\n", rw.Serve())
 		}()
-		log.SetOutput(rw)
+
+		logger = (&Logger{Writer: rw}).Printf
 	}
 
 	if conf.Root == "" {
@@ -101,6 +102,7 @@ func main() {
 	sl := &sitelist{
 		root:        conf.Root,
 		defaulthost: conf.DefaultHost,
+		logger:      logger,
 	}
 
 	if err = sl.load(); err != nil {
@@ -113,14 +115,14 @@ func main() {
 	// Start your engines!
 	if conf.Command.Address != "" {
 		go func() {
-			log.Printf("Starting command server at: %s", conf.Command.Address)
+			logger("Starting command server at: %s\n", conf.Command.Address)
 			s := &http.Server{
 				Addr:         conf.Command.Address,
 				Handler:      http.HandlerFunc(sl.cmdhttp),
 				ReadTimeout:  10 * time.Second,
 				WriteTimeout: 10 * time.Second,
 			}
-			log.Printf("Command server failure: %v", s.ListenAndServe())
+			logger("Command server failure: %v\n", s.ListenAndServe())
 		}()
 	}
 
@@ -128,14 +130,14 @@ func main() {
 	if conf.HTTP.Address != "" {
 		wg.Add(1)
 		go func() {
-			log.Printf("Starting HTTP server at: %s", conf.HTTP.Address)
+			logger("Starting HTTP server at: %s\n", conf.HTTP.Address)
 			s := &http.Server{
 				Addr:         conf.HTTP.Address,
 				Handler:      http.HandlerFunc(sl.http),
 				ReadTimeout:  30 * time.Second,
 				WriteTimeout: 10 * time.Minute,
 			}
-			log.Printf("HTTP server failure: %v", s.ListenAndServe())
+			logger("HTTP server failure: %v\n", s.ListenAndServe())
 			wg.Done()
 		}()
 	}
@@ -143,7 +145,7 @@ func main() {
 	if conf.HTTPS.Address != "" {
 		wg.Add(1)
 		go func() {
-			log.Printf("Starting HTTPS server at: %s", conf.HTTPS.Address)
+			logger("Starting HTTPS server at: %s\n", conf.HTTPS.Address)
 			s := &http.Server{
 				Addr:         conf.HTTPS.Address,
 				Handler:      http.HandlerFunc(sl.http),
@@ -151,11 +153,11 @@ func main() {
 				WriteTimeout: 10 * time.Minute,
 			}
 
-			log.Printf("HTTPS server failure: %v", s.ListenAndServeTLS(conf.HTTPS.Cert, conf.HTTPS.Key))
+			logger("HTTPS server failure: %v\n", s.ListenAndServeTLS(conf.HTTPS.Cert, conf.HTTPS.Key))
 			wg.Done()
 		}()
 	}
 
 	wg.Wait()
-	log.Printf("Terminating")
+	logger("Terminated\n")
 }

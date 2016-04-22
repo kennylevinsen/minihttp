@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,21 +38,6 @@ var (
 	}
 )
 
-func access(req *http.Request, status int) {
-	var forwardAddr, userAgent, referer string
-	var exists bool
-	if forwardAddr, exists = quickHeaderGetLast("X-Forwarded-For", req.Header); !exists {
-		forwardAddr = "-"
-	}
-	if userAgent, exists = quickHeaderGet("User-Agent", req.Header); !exists {
-		userAgent = "-"
-	}
-	if referer, exists = quickHeaderGet("Referer", req.Header); !exists {
-		referer = "-"
-	}
-	log.Printf("[%s (%s)]: %d \"%s %v %s\" \"%s\" \"%s\"", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, referer, userAgent)
-}
-
 // quickHeaderGet bypasses net/textproto/MIMEHeader.CanonicalMIMEHeaderKey,
 // which would otherwise have been run on the key. This is a waste of time if we
 // manually canonicalize the query key.
@@ -86,11 +70,27 @@ type sitelist struct {
 	root        string
 	devmode     uint32
 	defaulthost string
+	logger      func(string, ...interface{})
 
 	// stats
 	filesInMemory      int
 	plainBytesInMemory int
 	gzipBytesInMemory  int
+}
+
+func (sl *sitelist) access(req *http.Request, status int) {
+	var forwardAddr, userAgent, referer string
+	var exists bool
+	if forwardAddr, exists = quickHeaderGetLast("X-Forwarded-For", req.Header); !exists {
+		forwardAddr = "-"
+	}
+	if userAgent, exists = quickHeaderGet("User-Agent", req.Header); !exists {
+		userAgent = "-"
+	}
+	if referer, exists = quickHeaderGet("Referer", req.Header); !exists {
+		referer = "-"
+	}
+	sl.logger("%s %s %d \"%s %v %s\" \"%s\" \"%s\"\n", req.RemoteAddr, forwardAddr, status, req.Method, req.URL, req.Proto, referer, userAgent)
 }
 
 func (sl *sitelist) status() string {
@@ -274,7 +274,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		h["Content-Type"] = []string{"text/plain; charset=utf-8"}
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		w.Write(nil) // Do I need to call Write? :/
-		access(req, http.StatusMethodNotAllowed)
+		sl.access(req, http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -319,7 +319,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 
 		if cacheResponse {
 			w.WriteHeader(http.StatusNotModified)
-			access(req, http.StatusNotModified)
+			sl.access(req, http.StatusNotModified)
 			return
 		}
 	}
@@ -327,7 +327,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	// Are we dealing with a streaming resource (That is, a file)?
 	if r.bodyReadCloser != nil {
 		w.WriteHeader(status)
-		access(req, status)
+		sl.access(req, status)
 		if head {
 			return
 		}
@@ -339,7 +339,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 		} else {
 			_, err = io.Copy(w, r.bodyReadCloser)
 		}
-		log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
+		sl.logger("[%s]: error writing response: %v\n", req.RemoteAddr, err)
 		r.bodyReadCloser.Close()
 		return
 	}
@@ -347,7 +347,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	h["Content-Length"] = []string{fmt.Sprintf("%d", len(body))}
 
 	w.WriteHeader(status)
-	access(req, status)
+	sl.access(req, status)
 
 	// HEAD?
 	if head {
@@ -355,7 +355,7 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if _, err = w.Write(body); err != nil {
-		log.Printf("[%s]: error writing response: %v", req.RemoteAddr, err)
+		sl.logger("[%s]: error writing response: %v\n", req.RemoteAddr, err)
 	}
 }
 
@@ -363,21 +363,21 @@ func (sl *sitelist) http(w http.ResponseWriter, req *http.Request) {
 func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 	switch req.URL.Path {
 	case "/devel":
-		log.Printf("[%s]: enabling development mode", req.RemoteAddr)
+		sl.logger("[%s]: enabling development mode\n", req.RemoteAddr)
 		sl.dev(true)
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("OK\n"))
 	case "/prod":
-		log.Printf("[%s]: disabling development mode", req.RemoteAddr)
+		sl.logger("[%s]: disabling development mode\n", req.RemoteAddr)
 		sl.dev(false)
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("OK\n"))
 	case "/reload":
-		log.Printf("[%s]: reloading", req.RemoteAddr)
+		sl.logger("[%s]: reloading\n", req.RemoteAddr)
 		if err := sl.load(); err != nil {
-			log.Printf("[%s]: reload failed: %v", req.RemoteAddr, err)
+			sl.logger("[%s]: reload failed: %v\n", req.RemoteAddr, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("reload failed: %v\n", err)))
 			return
@@ -386,7 +386,7 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("OK\n"))
 	case "/status":
-		log.Printf("[%s]: status request", req.RemoteAddr)
+		sl.logger("[%s]: status request\n", req.RemoteAddr)
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(sl.status()))
 	default:
@@ -408,7 +408,7 @@ func (sl *sitelist) cmdhttp(w http.ResponseWriter, req *http.Request) {
 // (virtual) folder should serve files from fancy. All other files are served
 // completely from memory.
 func (sl *sitelist) load() error {
-	log.Printf("Reloading root")
+	sl.logger("Reloading root\n")
 
 	// We store the results of the load in local temporary variables, and only
 	// install them on success. It also shortens the time we need to hold the
@@ -467,7 +467,7 @@ func (sl *sitelist) load() error {
 			if conf == nil {
 				return err
 			}
-			log.Printf("Cannot read configuration for %s, using default: %v", name, err)
+			sl.logger("Cannot read configuration for %s, using default: %v\n", name, err)
 		}
 
 		s := newSite(conf)
