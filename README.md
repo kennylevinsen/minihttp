@@ -1,4 +1,4 @@
-# minihttp
+# minihttp [![Go Report Card](https://goreportcard.com/badge/github.com/joushou/minihttp)](https://goreportcard.com/report/github.com/joushou/minihttp)
 
 minihttp is a small webserver written in go. It features:
 
