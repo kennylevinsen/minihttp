@@ -117,7 +117,7 @@ func (r *resource) update() {
 	// If we know the size of the gzipped content already, we can evaluate if
 	// the gzip variant is worth the effort. If I math'd this right, then the
 	// threshold is a 10% size improvement. One could argue that ANY network
-	// benefit is worth persuing, but if the benefit is less than 10%, the
+	// benefit is worth pursuing, but if the benefit is less than 10%, the
 	// network benefit is negligible, and the server is basically just holding
 	// the file in memory twice.
 	if r.gbody != nil && float64(len(r.gbody))*1.1 >= float64(len(r.body)) {
