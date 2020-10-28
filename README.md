@@ -1,4 +1,4 @@
-# minihttp [![Go Report Card](https://goreportcard.com/badge/github.com/joushou/minihttp)](https://goreportcard.com/report/github.com/joushou/minihttp)
+# minihttp [![Go Report Card](https://goreportcard.com/badge/github.com/kennylevinsen/minihttp)](https://goreportcard.com/report/github.com/kennylevinsen/minihttp)
 
 minihttp is a small webserver written in go. It features:
 
@@ -21,7 +21,7 @@ The command server thing is totally cool. Added a vhost? Removed one? Changed yo
 
 1. Get minihttp:
 ```text
-go get github.com/joushou/minihttp
+go get github.com/kennylevinsen/minihttp
 ```
 
 2. Make directory structure:
